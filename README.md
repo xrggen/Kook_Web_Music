@@ -1,3 +1,4 @@
+**#基于@VexMare VexMare/Kook_Web_Music项目的VibeCoding更新**
 # KOOK音乐机器人 Web控制台
 
 > **当前版本**: V2.7.2 | **发布日期**: 2026-06-09
