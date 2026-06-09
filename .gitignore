@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.bak
+*.bac
+venv/
+
+# Logs
+*.log
+
+# Environment
+.env
+!.env.example
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Runtime state
+.heartbeat
+
+# Runtime credentials
+Cookie/*.txt
+Cookie/*.json
+Cookie/*.bac
+qq-music-api/config/user-info.json
+
+# Binaries
+*.7z
+*.exe
+ffmpeg/
+ffprobe.exe
+
+# Temp
+*.zip
+/tmp/
+*.code-workspace
