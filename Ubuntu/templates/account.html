@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音乐账号管理 - KOOK音乐控制台</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css', v='1.2') }}" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid" style="padding-top: 20px;">
+        <!-- 导航栏 -->
+        <nav class="navbar navbar-expand-lg mb-4">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="/">
+                    <i class="bi bi-music-note-beamed"></i> KOOK音乐控制台
+                </a>
+                <div class="navbar-nav ms-auto">
+                    <a class="nav-link" href="/"><i class="bi bi-house"></i> 首页</a>
+                    <a class="nav-link" href="/dashboard"><i class="bi bi-speedometer2"></i> 控制台</a>
+                    <a class="nav-link active" href="/account"><i class="bi bi-person-circle"></i> 账号</a>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 平台选择 -->
+        <div class="row justify-content-center mb-3">
+            <div class="col-md-5">
+                <ul class="nav nav-pills nav-fill" id="platform-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#platform-wy" type="button">
+                            <i class="bi bi-music-note"></i> 网易云音乐
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#platform-qq" type="button">
+                            <i class="bi bi-music-note-beamed"></i> QQ音乐
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#platform-bili" type="button">
+                            <i class="bi bi-play-circle"></i> B站
+                        </button>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="tab-content">
+        <!-- ========== 网易云音乐 ========== -->
+        <div class="tab-pane fade show active" id="platform-wy">
+
+        <!-- 未登录状态：登录区域 -->
+        <div id="login-section" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-header">
+                            <ul class="nav nav-tabs card-header-tabs" id="login-tabs">
+                                <li class="nav-item">
+                                    <a class="nav-link active" data-bs-toggle="tab" href="#qrcode-tab">
+                                        <i class="bi bi-qr-code"></i> 扫码登录
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" data-bs-toggle="tab" href="#phone-tab">
+                                        <i class="bi bi-phone"></i> 手机登录
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" data-bs-toggle="tab" href="#cookie-tab">
+                                        <i class="bi bi-key"></i> Cookie
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="card-body">
+                            <div class="tab-content">
+                                <!-- 扫码登录 -->
+                                <div class="tab-pane fade show active" id="qrcode-tab">
+                                    <div class="text-center mb-3">
+                                        <div id="qr-container">
+                                            <img id="qr-image" src="" alt="二维码" style="max-width: 240px; display: none;">
+                                            <div id="qr-loading" class="text-muted py-5">
+                                                <div class="spinner-border"></div>
+                                                <p class="mt-2">正在生成二维码...</p>
+                                            </div>
+                                            <div id="qr-expired" class="text-muted py-5" style="display: none;">
+                                                <i class="bi bi-exclamation-triangle display-4"></i>
+                                                <p class="mt-2">二维码已过期</p>
+                                                <button class="btn btn-primary btn-sm" id="qr-refresh-btn">刷新二维码</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="qr-status" class="text-center text-muted">
+                                        请使用网易云音乐App扫描二维码
+                                    </div>
+                                </div>
+
+                                <!-- 手机登录 -->
+                                <div class="tab-pane fade" id="phone-tab">
+                                    <div class="mb-3">
+                                        <label class="form-label">手机号</label>
+                                        <div class="input-group">
+                                            <span class="input-group-text">+86</span>
+                                            <input type="text" class="form-control" id="phone-input" placeholder="请输入手机号">
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">验证码</label>
+                                        <div class="input-group">
+                                            <input type="text" class="form-control" id="captcha-input" placeholder="请输入验证码">
+                                            <button class="btn btn-outline-primary" id="send-captcha-btn">发送验证码</button>
+                                        </div>
+                                    </div>
+                                    <div class="d-grid">
+                                        <button class="btn btn-primary" id="phone-login-btn">登录</button>
+                                    </div>
+                                    <div id="phone-login-msg" class="mt-2 text-center"></div>
+                                </div>
+
+                                <!-- Cookie 手动输入 -->
+                                <div class="tab-pane fade" id="cookie-tab">
+                                    <div class="mb-3">
+                                        <label class="form-label">粘贴Cookie字符串</label>
+                                        <textarea class="form-control" id="cookie-input" rows="4" placeholder="key1=value1; key2=value2; ..."></textarea>
+                                    </div>
+                                    <div class="d-grid">
+                                        <button class="btn btn-primary" id="cookie-save-btn">保存Cookie</button>
+                                    </div>
+                                    <div id="cookie-save-msg" class="mt-2 text-center"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 已登录状态：账号信息区域 -->
+        <div id="account-section" style="display: none;">
+            <div class="row">
+                <!-- 左侧：用户信息卡片 -->
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <img id="profile-avatar" src="" class="rounded-circle mb-3" width="96" height="96" alt="头像">
+                            <h4 id="profile-nickname">--</h4>
+                            <p class="text-muted">ID: <span id="profile-uid">--</span></p>
+                            <div class="mb-2">
+                                <span id="profile-level-badge" class="badge bg-secondary">Lv.--</span>
+                                <span id="profile-vip-badge" class="badge bg-danger" style="display: none;">VIP</span>
+                            </div>
+                            <p class="small text-muted">
+                                签名: <span id="profile-signature">--</span>
+                            </p>
+                            <div class="d-flex justify-content-center gap-2 mb-3">
+                                <span class="small"><i class="bi bi-people"></i> 关注: <strong id="stat-follows">--</strong></span>
+                                <span class="small"><i class="bi bi-person-check"></i> 粉丝: <strong id="stat-followeds">--</strong></span>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-outline-success btn-sm" id="daily-signin-btn">
+                                    <i class="bi bi-calendar-check"></i> 每日签到
+                                </button>
+                                <button class="btn btn-outline-danger btn-sm" id="logout-btn">
+                                    <i class="bi bi-box-arrow-right"></i> 退出登录
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 收藏统计 -->
+                    <div class="card mt-3">
+                        <div class="card-header"><i class="bi bi-heart"></i> 收藏统计</div>
+                        <div class="card-body">
+                            <div class="row text-center">
+                                <div class="col-4 mb-3">
+                                    <div class="fw-bold text-primary" id="sub-playlist">--</div>
+                                    <small class="text-muted">歌单</small>
+                                </div>
+                                <div class="col-4 mb-3">
+                                    <div class="fw-bold text-success" id="sub-artist">--</div>
+                                    <small class="text-muted">歌手</small>
+                                </div>
+                                <div class="col-4 mb-3">
+                                    <div class="fw-bold text-warning" id="sub-album">--</div>
+                                    <small class="text-muted">专辑</small>
+                                </div>
+                                <div class="col-4">
+                                    <div class="fw-bold text-info" id="sub-djradio">--</div>
+                                    <small class="text-muted">电台</small>
+                                </div>
+                                <div class="col-4">
+                                    <div class="fw-bold text-danger" id="sub-mv">--</div>
+                                    <small class="text-muted">MV</small>
+                                </div>
+                                <div class="col-4">
+                                    <div class="fw-bold" id="sub-program">--</div>
+                                    <small class="text-muted">节目</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右侧：用户歌单 -->
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-music-note-list"></i> 我的歌单</span>
+                            <span class="badge bg-primary" id="playlist-count">0</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3" id="playlist-grid">
+                                <div class="col-12 text-center text-muted py-4">
+                                    <div class="spinner-border"></div>
+                                    <p class="mt-2">加载中...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 签到结果 -->
+                    <div class="card mt-3" id="signin-result-card" style="display: none;">
+                        <div class="card-header"><i class="bi bi-gift"></i> 签到结果</div>
+                        <div class="card-body" id="signin-result-body"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        </div><!-- /#platform-wy -->
+
+        <!-- ========== QQ音乐 ========== -->
+        <div class="tab-pane fade" id="platform-qq">
+
+        <!-- QQ Music 未登录 -->
+        <div id="qq-login-section" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-header">
+                            <ul class="nav nav-tabs card-header-tabs" id="qq-login-tabs">
+                                <li class="nav-item">
+                                    <a class="nav-link active" data-bs-toggle="tab" href="#qq-qrcode-tab">
+                                        <i class="bi bi-qr-code"></i> 扫码登录
+                                    </a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" data-bs-toggle="tab" href="#qq-cookie-tab">
+                                        <i class="bi bi-key"></i> Cookie
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="card-body">
+                            <div class="tab-content">
+                                <!-- QQ 扫码登录 -->
+                                <div class="tab-pane fade show active" id="qq-qrcode-tab">
+                                    <div class="text-center mb-3">
+                                        <div id="qq-qr-container">
+                                            <img id="qq-qr-image" src="" alt="QQ二维码" style="max-width: 240px; display: none;">
+                                            <div id="qq-qr-loading" class="text-muted py-5">
+                                                <div class="spinner-border"></div>
+                                                <p class="mt-2">正在生成二维码...</p>
+                                            </div>
+                                            <div id="qq-qr-expired" class="text-muted py-5" style="display: none;">
+                                                <i class="bi bi-exclamation-triangle display-4"></i>
+                                                <p class="mt-2">二维码已过期</p>
+                                                <button class="btn btn-primary btn-sm" id="qq-qr-refresh-btn">刷新二维码</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="qq-qr-status" class="text-center text-muted">
+                                        请使用QQ扫描二维码
+                                    </div>
+                                </div>
+                                <!-- QQ Cookie -->
+                                <div class="tab-pane fade" id="qq-cookie-tab">
+                                    <div class="mb-3">
+                                        <label class="form-label">粘贴QQ音乐Cookie字符串</label>
+                                        <textarea class="form-control" id="qq-cookie-input" rows="4" placeholder="key1=value1; key2=value2; ..."></textarea>
+                                    </div>
+                                    <div class="d-grid">
+                                        <button class="btn btn-primary" id="qq-cookie-save-btn">保存Cookie</button>
+                                    </div>
+                                    <div id="qq-cookie-save-msg" class="mt-2 text-center"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- QQ Music 已登录 -->
+        <div id="qq-account-section" style="display: none;">
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <img id="qq-profile-avatar" src="" class="rounded-circle mb-3" width="96" height="96" alt="头像"
+                                 onerror="this.style.display='none'">
+                            <h4 id="qq-profile-nickname">--</h4>
+                            <p class="text-muted">QQ号: <span id="qq-uin-display">--</span></p>
+                            <div class="mb-2">
+                                <span class="small"><i class="bi bi-music-note-list"></i> 歌单: <strong id="qq-stat-playlists">--</strong></span>
+                            </div>
+                            <div class="mb-2">
+                                <span class="small"><i class="bi bi-clock"></i> 有效期: <strong id="qq-expiry-display">—</strong></span>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-outline-danger btn-sm" id="qq-logout-btn">
+                                    <i class="bi bi-box-arrow-right"></i> 退出登录
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-music-note-list"></i> 我的歌单</span>
+                            <span class="badge bg-primary" id="qq-playlist-count">0</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3" id="qq-playlist-grid">
+                                <div class="col-12 text-center text-muted py-4">
+                                    <div class="spinner-border spinner-border-sm"></div>
+                                    <span class="ms-2">加载中...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        </div><!-- /#platform-qq -->
+
+        <!-- ========== B站 ========== -->
+        <div class="tab-pane fade" id="platform-bili">
+
+        <div id="bili-login-section" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-header">
+                            <ul class="nav nav-tabs card-header-tabs" id="bili-login-tabs">
+                                <li class="nav-item">
+                                    <a class="nav-link active" data-bs-toggle="tab" href="#bili-qrcode-tab">扫码登录</a>
+                                </li>
+                                <li class="nav-item">
+                                    <a class="nav-link" data-bs-toggle="tab" href="#bili-cookie-tab">Cookie</a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="card-body">
+                            <div class="tab-content">
+                                <div class="tab-pane fade show active" id="bili-qrcode-tab">
+                                    <div id="bili-qr-container">
+                                        <img id="bili-qr-image" src="" alt="B站二维码" style="max-width: 240px; display: none;">
+                                        <div id="bili-qr-loading" class="text-muted py-5">
+                                            <div class="spinner-border text-danger" role="status"></div>
+                                            <p class="mt-2">正在生成二维码...</p>
+                                        </div>
+                                        <div id="bili-qr-expired" class="text-muted py-5" style="display: none;">
+                                            <p>二维码已过期</p>
+                                            <button class="btn btn-danger btn-sm" id="bili-qr-refresh-btn">刷新二维码</button>
+                                        </div>
+                                    </div>
+                                    <div id="bili-qr-status" class="text-center text-muted">
+                                        请使用B站客户端扫描二维码
+                                    </div>
+                                </div>
+                                <div class="tab-pane fade" id="bili-cookie-tab">
+                                    <div class="mb-3">
+                                        <textarea class="form-control" id="bili-cookie-input" rows="4" placeholder="SESSDATA=xxx..."></textarea>
+                                    </div>
+                                    <div class="d-grid">
+                                        <button class="btn btn-danger" id="bili-cookie-save-btn">保存Cookie</button>
+                                    </div>
+                                    <div id="bili-cookie-save-msg" class="mt-2 text-center"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="bili-account-section" style="display: none;">
+            <div class="row justify-content-center">
+                <div class="col-md-5">
+                    <div class="card">
+                        <div class="card-body text-center">
+                            <img id="bili-profile-avatar" src="" class="rounded-circle mb-3" width="96" height="96" alt="头像"
+                                 style="object-fit: cover; background: #eee;">
+                            <h4 id="bili-profile-nickname">--</h4>
+                            <p class="text-muted">UID: <span id="bili-uid-display">--</span></p>
+                            <p class="text-muted">
+                                <span class="small"><i class="bi bi-star"></i> Lv<span id="bili-level-display">--</span></span>
+                            </p>
+                            <div class="d-flex justify-content-center gap-2 mt-3">
+                                <button class="btn btn-outline-danger btn-sm" id="bili-logout-btn">
+                                    <i class="bi bi-box-arrow-right"></i> 退出登录
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row justify-content-center mt-4">
+                <div class="col-md-10">
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-collection-play"></i> 我的收藏夹</span>
+                            <span class="badge bg-danger" id="bili-playlist-count">0</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3" id="bili-playlist-grid">
+                                <div class="col-12 text-center text-muted py-3">
+                                    <div class="spinner-border spinner-border-sm" role="status"></div> 加载中...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        </div><!-- /#platform-bili -->
+        </div><!-- /.tab-content -->
+
+        <!-- Toast 提示 -->
+        <div class="position-fixed top-0 end-0 p-3" style="z-index: 9999;">
+            <div id="account-toast" class="toast align-items-center text-bg-success border-0" role="alert">
+                <div class="d-flex">
+                    <div class="toast-body" id="toast-message"></div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/account.js', v='1.0') }}"></script>
+    <script src="{{ url_for('static', filename='js/qq_account.js', v='1.0') }}"></script>
+    <script src="{{ url_for('static', filename='js/bili_account.js', v='1.0') }}"></script>
+</body>
+</html>

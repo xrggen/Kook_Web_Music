@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.bak
+venv/
+
+# Logs
+*.log
+windows/log.txt
+Ubuntu/app.log
+Ubuntu/debug.log
+
+# Environment (secrets)
+.env
+!.env.example
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Temp
+*.zip
+/tmp/
+
+# FFmpeg binaries (large)
+ffmpeg/
+ffmpeg.exe
+ffmpeg.exe.bac
+ffmpeg.bac/
+
+# Cookie files (contain secrets)
+**/Cookie/cookie.txt
+**/Cookie/cookies.json
+**/Cookie/qq_cookie.txt
+**/Cookie/bili_cookie.txt
+**/Cookie/qr.png
+**/Cookie/*.bac
+
+# Runtime artifacts
+.heartbeat
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Netease Cloud Music API (large dependency, install via npm)
+NeteaseCloudMusicApi/
+
+# QQ Music API (large dependency, install via npm)
+qq-music-api/
+
+# Bilibili API (if local copy)
+bilibili-api/
