@@ -339,6 +339,7 @@ class PlayHandler(threading.Thread):
             del play_list[self.channel_id]
         if self.channel_id in playlist_handle_status and playlist_handle_status[self.channel_id]:
             playlist_handle_status[self.channel_id] = False
+        guild_status.pop(self.channel_id, None)
         try:
             await self.requestor.leave(self._rtp_channel_id or self.channel_id)
         except:

@@ -585,6 +585,10 @@ async def playlist_play(msg: Message, playlist_input: str = ''):
 
         # 提取歌单ID（与前端 dashboard.js importPlaylist 逻辑一致）
         import re
+        # 剥离 KOOK Markdown 链接: [text](url) → url
+        m_md = re.match(r'\[.*?\]\((https?://[^)]+)\)', playlist_input)
+        if m_md:
+            playlist_input = m_md.group(1)
         playlist_id = playlist_input
         if playlist_input.startswith("http") and "music.163.com" in playlist_input:
             # 标准链接: https://music.163.com/playlist?id=123456
@@ -657,6 +661,10 @@ async def qq_playlist_play(msg: Message, playlist_input: str = ''):
 
         # 提取歌单ID
         import re
+        # 剥离 KOOK Markdown 链接: [text](url) → url
+        m_md = re.match(r'\[.*?\]\((https?://[^)]+)\)', playlist_input)
+        if m_md:
+            playlist_input = m_md.group(1)
         disstid = playlist_input
         if playlist_input.startswith("http") and "y.qq.com" in playlist_input:
             # y.qq.com/n/ryqq/playlist/123456 形式
@@ -958,7 +966,17 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
             await msg.reply("❌ 请先加入语音频道")
             return
 
+        import re
+        # 剥离 KOOK Markdown 链接: [text](url) → url
+        m_md = re.match(r'\[.*?\]\((https?://[^)]+)\)', fav_input)
+        if m_md:
+            fav_input = m_md.group(1)
         media_id = fav_input.strip()
+        # 如果是B站收藏夹链接，提取 media_id
+        if media_id.startswith("http") and "bilibili.com" in media_id:
+            m = re.search(r'media_id=(\d+)', media_id) or re.search(r'fid=(\d+)', media_id)
+            if m:
+                media_id = m.group(1)
         if not media_id.isdigit():
             await msg.reply("❌ 收藏夹ID应为纯数字")
             return

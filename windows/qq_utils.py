@@ -191,33 +191,133 @@ def _parse_qq_playlist_detail(data):
     return {}, []
 
 
+def _qqmusic_sign(param_str: str) -> str:
+    """QQ Music API 签名算法 — 移植自 GoMusic 项目 (Bistutu/GoMusic)"""
+    import hashlib
+    k1 = {str(i): i for i in range(10)}
+    k1.update({'A': 10, 'B': 11, 'C': 12, 'D': 13, 'E': 14, 'F': 15})
+    l1 = [212, 45, 80, 68, 195, 163, 163, 203, 157, 220, 254, 91, 204, 79, 104, 6]
+    t = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
+
+    md5_str = hashlib.md5(param_str.encode()).hexdigest().upper()
+    t1 = ''.join(md5_str[i] for i in [21, 4, 9, 26, 16, 20, 27, 30])
+    t3 = ''.join(md5_str[i] for i in [18, 11, 3, 2, 1, 7, 6, 25])
+
+    ls2 = []
+    for i in range(16):
+        x1 = k1[md5_str[i * 2]]
+        x2 = k1[md5_str[i * 2 + 1]]
+        ls2.append((x1 * 16 ^ x2) ^ l1[i])
+
+    ls3 = []
+    for i in range(6):
+        if i == 5:
+            ls3.append(t[ls2[-1] >> 2])
+            ls3.append(t[(ls2[-1] & 3) << 4])
+        else:
+            ls3.append(t[ls2[i * 3] >> 2])
+            ls3.append(t[(ls2[i * 3 + 1] >> 4) ^ ((ls2[i * 3] & 3) << 4)])
+            ls3.append(t[(ls2[i * 3 + 2] >> 6) ^ ((ls2[i * 3 + 1] & 15) << 2)])
+            ls3.append(t[63 & ls2[i * 3 + 2]])
+
+    import re as _re
+    t2 = _re.sub(r'[\\\\/+]', '', ''.join(ls3))
+    return 'zzb' + (t1 + t2 + t3).lower()
+
+
+def _qq_api_direct(disstid):
+    """通过 u6.y.qq.com 签名 API 获取歌单（GoMusic 方案）。
+    无需 cookie，支持任意公开歌单，支持分页（>30首）。"""
+    import json as _json, time as _time
+
+    def _fetch_page(song_begin, song_num):
+        """获取单页歌单数据，尝试多个 platform"""
+        for platform in ('-1', 'android', 'iphone', 'h5', 'wxfshare', 'iphone_wx'):
+            body = _json.dumps({
+                'req_0': {
+                    'module': 'music.srfDissInfo.aiDissInfo',
+                    'method': 'uniform_get_Dissinfo',
+                    'param': {
+                        'disstid': int(disstid), 'enc_host_uin': '',
+                        'tag': 1, 'userinfo': 1,
+                        'song_begin': song_begin, 'song_num': song_num,
+                    }
+                },
+                'comm': {'g_tk': 5381, 'uin': 0, 'format': 'json', 'platform': platform}
+            }, separators=(',', ':'))
+            sign = _qqmusic_sign(body)
+            url = f'https://u6.y.qq.com/cgi-bin/musics.fcg?sign={sign}&_={int(_time.time() * 1000)}'
+            try:
+                res = requests.post(url, data=body, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Content-Type': 'application/json',
+                }, timeout=30)
+                # 108 字节 = 错误响应（GoMusic 经验值）
+                if len(res.content) == 108:
+                    continue
+                data = res.json()
+                req0 = data.get('req_0', {})
+                if req0.get('code') == 0:
+                    return req0.get('data', {})
+            except Exception:
+                continue
+        return None
+
+    # 先拉第一页
+    data = _fetch_page(0, 30)
+    if not data:
+        return {}, []
+
+    dirinfo = data.get('dirinfo', {})
+    all_songs = list(data.get('songlist', []))
+    total = dirinfo.get('songnum', len(all_songs))
+
+    # 分页拉取剩余歌曲
+    while len(all_songs) < total:
+        page = _fetch_page(len(all_songs), 30)
+        if not page:
+            break
+        all_songs.extend(page.get('songlist', []))
+
+    logger.info(f"[QQ歌单直连] 名称={dirinfo.get('title','?')} 歌曲数={len(all_songs)} total={total}")
+    return dirinfo, all_songs
+
+
 def get_qq_playlist(disstid):
     """获取QQ音乐歌单信息，返回 {name, trackCount}"""
+    # 优先直连 u6.y.qq.com 签名 API（无需 cookie，支持任何公开歌单）
+    dirinfo, songlist = _qq_api_direct(disstid)
+    if songlist:
+        return {"name": dirinfo.get('title', '未知歌单'), "trackCount": len(songlist)}
+
+    # 回退 qq-music-api
     url = f"{QQ_MUSIC_API_BASE}/getSongListDetail?disstid={disstid}"
-    logger.info(f"[QQ歌单] 请求: GET {url}")
+    logger.info(f"[QQ歌单] 直连失败，回退本地API: GET {url}")
     try:
         res = requests.get(url, params=build_qq_params(), timeout=30)
         data = res.json()
         detail, songlist = _parse_qq_playlist_detail(data)
         name = detail.get("dissname", "未知歌单")
-        track_count = len(songlist)
-        logger.info(f"[QQ歌单] 状态={res.status_code} 名称={name} 歌曲数={track_count}")
-        return {"name": name, "trackCount": track_count}
+        logger.info(f"[QQ歌单] 状态={res.status_code} 名称={name} 歌曲数={len(songlist)}")
+        return {"name": name, "trackCount": len(songlist)}
     except Exception as e:
         logger.error(f"[QQ歌单] 异常: {e}")
         return {}
 
 
 def get_qq_playlist_all_tracks(disstid):
-    """获取QQ音乐歌单中所有歌曲（单次请求，无分页）"""
+    """获取QQ音乐歌单中所有歌曲（支持分页，无上限）"""
+    dirinfo, songlist = _qq_api_direct(disstid)
+    if songlist:
+        return songlist
+
     url = f"{QQ_MUSIC_API_BASE}/getSongListDetail?disstid={disstid}"
-    logger.info(f"[QQ歌单分页] 请求: GET {url}")
+    logger.info(f"[QQ歌单分页] 直连失败，回退本地API: GET {url}")
     try:
         res = requests.get(url, params=build_qq_params(), timeout=30)
         data = res.json()
         detail, songlist = _parse_qq_playlist_detail(data)
-        name = detail.get("dissname", "?")
-        logger.info(f"[QQ歌单分页] 歌单={name} 共 {len(songlist)} 首")
+        logger.info(f"[QQ歌单分页] 歌单={detail.get('dissname','?')} 共 {len(songlist)} 首")
         return songlist
     except Exception as e:
         logger.error(f"[QQ歌单分页] 异常: {e}")
