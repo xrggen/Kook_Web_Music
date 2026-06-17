@@ -4,7 +4,7 @@
 
 A multi-platform music bot for KOOK (开黑啦) with a Flask web console. Integrates three music platforms — **NetEase Cloud Music (网易云)**, **QQ Music**, and **Bilibili (B站)** — and streams audio to KOOK voice channels via FFmpeg/RTP.
 
-**Current version**: V2.7.2 (2026-06-09)
+**Current version**: V2.7.3 (2026-06-17)
 
 ## Architecture
 
@@ -83,6 +83,15 @@ Three-tier whitelist via `.env` — all empty = allow everyone; if multiple set,
 ### Chinese Quote Normalization
 `DefaultLexer.lex` is patched to normalize Chinese quotes (`""`, `''`, `「」`, `『』`) to ASCII before `shlex.split()`, with fallback to `str.split()` on `ValueError`.
 
+### QQ Music Playlist Fetch (V2.7.3)
+QQ Music playlist API uses `u6.y.qq.com/cgi-bin/musics.fcg` with a custom MD5-based signature algorithm (ported from GoMusic project). Key details:
+- `_qqmusic_sign()` computes the `sign` query parameter from the request body
+- Module/method: `music.srfDissInfo.aiDissInfo` / `uniform_get_Dissinfo`
+- `g_tk=5381`, `uin=0` (anonymous, no cookie needed)
+- Tries multiple `platform` values (`-1`, `android`, `iphone`, `h5`, etc.)
+- Pagination: 30 songs per page, loops until all fetched
+- Error detection: 108-byte response = invalid, try next platform
+
 ### Bilibili-Specific Optimizations
 - **Session pre-warming**: Shared `requests.Session` visits bilibili.com + API nav to acquire `buvid3` device cookie (avoids -412 anti-crawl)
 - **BVid direct parse**: `/bili BVxxxx [page]` skips search API entirely
@@ -105,7 +114,7 @@ Three-tier whitelist via `.env` — all empty = allow everyone; if multiple set,
 - **External**: FFmpeg (bundled in `windows/ffmpeg/`)
 
 ## Development Notes
-- Both `windows/` and `Ubuntu/` are platform variants with identical core logic (synced V2.7.2, 2026-06-15)
+- Both `windows/` and `Ubuntu/` are platform variants with identical core logic (synced V2.7.3, 2026-06-17)
 - `windows/` is the primary dev target; changes should be mirrored to `Ubuntu/` after validation
 - `run.py` auto-starts Node.js APIs as subprocesses, kills port 3000/3200 before launch
 - Cookie files are stored as plain text in `Cookie/` directory
