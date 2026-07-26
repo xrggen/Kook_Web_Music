@@ -5,9 +5,11 @@ import os
 try:
     from .kookvoice import kookvoice
     from .config import FFMPEG_PATH
+    from .runtime_health import runtime_health
 except ImportError:
     from kookvoice import kookvoice
     from config import FFMPEG_PATH
+    from runtime_health import runtime_health
 
 logger = logging.getLogger(__name__)
 api_bp = Blueprint('api', __name__)
@@ -28,7 +30,11 @@ def get_stats():
             queued_songs += len(guild_data.get('play_list', []))
 
         bot = current_app.extensions.get('kook_bot')
-        bot_status = 'online' if bot and getattr(bot, 'is_running', False) else 'offline'
+        bot_status = (
+            'online'
+            if bot is not None and runtime_health.bot_is_healthy()
+            else 'offline'
+        )
         ffmpeg_status = 'normal' if os.path.exists(FFMPEG_PATH) else 'error'
 
         return jsonify({

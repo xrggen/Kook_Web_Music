@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import threading
@@ -12,6 +13,7 @@ if str(WINDOWS_DIR) not in sys.path:
 
 from kookvoice import kookvoice
 import qq_utils
+import app as windows_app
 
 
 class FakePlayHandler:
@@ -22,10 +24,23 @@ class FakePlayHandler:
         self.token = token
         self.finished = threading.Event()
         self.started = False
+        self.stop_requests = 0
+        self.detached = False
+        self.processes_to_kill = 0
         self.__class__.created.append(self)
 
     def start(self):
         self.started = True
+
+    def request_stop(self):
+        self.stop_requests += 1
+        return True
+
+    def mark_detached(self):
+        self.detached = True
+
+    def force_terminate_subprocesses(self):
+        return self.processes_to_kill
 
 
 class PlaybackStateTests(unittest.TestCase):
@@ -38,6 +53,8 @@ class PlaybackStateTests(unittest.TestCase):
             kookvoice.guild_status.clear()
             kookvoice.playlist_handle_status.clear()
             kookvoice._active_handlers.clear()
+            kookvoice._recovering_channels.clear()
+            kookvoice._pending_leave_channels.clear()
         kookvoice.PlayHandler = FakePlayHandler
 
     def tearDown(self):
@@ -48,6 +65,8 @@ class PlaybackStateTests(unittest.TestCase):
             kookvoice.guild_status.clear()
             kookvoice.playlist_handle_status.clear()
             kookvoice._active_handlers.clear()
+            kookvoice._recovering_channels.clear()
+            kookvoice._pending_leave_channels.clear()
 
     def test_concurrent_join_creates_only_one_handler(self):
         results = []
@@ -163,6 +182,159 @@ class PlaybackStateTests(unittest.TestCase):
         self.assertEqual(channels, {"stale"})
         self.assertIsNone(kookvoice.get_state_snapshot("stale"))
 
+    def test_reset_actively_cancels_registered_handler(self):
+        player = kookvoice.Player("active", "token")
+        player.join("guild-1")
+        handler = FakePlayHandler.created[0]
+
+        channels = kookvoice.reset_playback_state()
+
+        self.assertEqual(channels, {"active"})
+        self.assertEqual(handler.stop_requests, 1)
+        self.assertEqual(
+            kookvoice.get_state_snapshot()["guild_status"]["active"],
+            kookvoice.Status.STOP,
+        )
+        self.assertTrue(kookvoice.get_state_snapshot("active")["_stopping"])
+        with self.assertRaisesRegex(RuntimeError, "紧急恢复"):
+            kookvoice.Player("active", "token").add_music(
+                "https://example.invalid/too-early.mp3",
+                guild_id="guild-1",
+            )
+        kookvoice.finish_playback_recovery(channels, {"active"})
+        with kookvoice.state_lock:
+            self.assertEqual(kookvoice._pending_leave_channels, {"active"})
+        kookvoice.finish_playback_recovery(channels)
+        with kookvoice.state_lock:
+            self.assertEqual(kookvoice._pending_leave_channels, set())
+
+    def test_force_cleanup_kills_processes_and_detaches_handler(self):
+        player = kookvoice.Player("stuck", "token")
+        player.join("guild-1")
+        handler = FakePlayHandler.created[0]
+        handler.processes_to_kill = 2
+
+        killed = kookvoice.force_terminate_handler_processes({"stuck"})
+        detached = kookvoice.detach_stuck_handlers({"stuck"})
+
+        self.assertEqual(killed, 2)
+        self.assertEqual(detached, {"stuck"})
+        self.assertTrue(handler.detached)
+        self.assertGreaterEqual(handler.stop_requests, 1)
+        self.assertIsNone(kookvoice.get_state_snapshot("stuck"))
+        with kookvoice.state_lock:
+            self.assertNotIn("stuck", kookvoice._active_handlers)
+
+        # 隔离后同一频道可立即建立新会话。
+        kookvoice.Player("stuck", "token").add_music(
+            "https://example.invalid/recovered.mp3",
+            guild_id="guild-1",
+        )
+        self.assertEqual(len(FakePlayHandler.created), 2)
+
+    def test_real_handler_request_stop_cancels_push_task(self):
+        handler = self.original_handler("cancel-test", "token")
+
+        class FakeTask:
+            def __init__(self):
+                self.cancelled = False
+
+            def done(self):
+                return False
+
+            def cancel(self):
+                self.cancelled = True
+
+        class FakeLoop:
+            def is_closed(self):
+                return False
+
+            def call_soon_threadsafe(self, callback):
+                callback()
+
+        task = FakeTask()
+        handler._loop = FakeLoop()
+        handler._push_task = task
+        with kookvoice.state_lock:
+            kookvoice._active_handlers["cancel-test"] = handler
+            kookvoice.play_list["cancel-test"] = kookvoice._new_channel_state(
+                "cancel-test",
+                "token",
+                "guild-1",
+            )
+
+        scheduled = handler.request_stop()
+
+        self.assertTrue(scheduled)
+        self.assertTrue(task.cancelled)
+        self.assertTrue(handler.stop_requested.is_set())
+        self.assertEqual(
+            kookvoice.get_state_snapshot()["guild_status"]["cancel-test"],
+            kookvoice.Status.STOP,
+        )
+
+    def test_force_terminate_validates_tracked_media_process_identity(self):
+        if kookvoice.psutil is None:
+            self.skipTest("psutil is not installed")
+
+        handler = self.original_handler("process-test", "token")
+        async_process = mock.Mock(pid=4242, returncode=None)
+        tracked_process = mock.Mock(pid=4242)
+        tracked_process.create_time.return_value = 100.0
+        tracked_process.name.return_value = "ffmpeg.exe"
+        tracked_process.children.return_value = []
+        with handler._control_lock:
+            handler._subprocesses[4242] = {
+                "proc": async_process,
+                "label": "ffmpeg-decode",
+                "create_time": 100.0,
+            }
+
+        with (
+            mock.patch.object(
+                kookvoice.psutil,
+                "Process",
+                return_value=tracked_process,
+            ),
+            mock.patch.object(
+                kookvoice.psutil,
+                "wait_procs",
+                return_value=([tracked_process], []),
+            ) as wait_procs,
+        ):
+            killed = handler.force_terminate_subprocesses()
+
+        self.assertEqual(killed, 1)
+        tracked_process.kill.assert_called_once_with()
+        wait_procs.assert_called_once()
+        self.assertEqual(handler._subprocesses, {})
+
+    def test_force_terminate_refuses_reused_pid(self):
+        if kookvoice.psutil is None:
+            self.skipTest("psutil is not installed")
+
+        handler = self.original_handler("reused-pid-test", "token")
+        async_process = mock.Mock(pid=4243, returncode=None)
+        reused_process = mock.Mock(pid=4243)
+        reused_process.create_time.return_value = 200.0
+        with handler._control_lock:
+            handler._subprocesses[4243] = {
+                "proc": async_process,
+                "label": "ffmpeg-decode",
+                "create_time": 100.0,
+            }
+
+        with mock.patch.object(
+            kookvoice.psutil,
+            "Process",
+            return_value=reused_process,
+        ):
+            killed = handler.force_terminate_subprocesses()
+
+        self.assertEqual(killed, 0)
+        reused_process.kill.assert_not_called()
+        async_process.kill.assert_not_called()
+
     def test_set_ffmpeg_fails_fast_for_missing_binary(self):
         with self.assertRaises(FileNotFoundError):
             kookvoice.set_ffmpeg("definitely-missing-ffmpeg-binary")
@@ -172,6 +344,195 @@ class PlaybackStateTests(unittest.TestCase):
             fake_binary.touch()
             kookvoice.set_ffmpeg(fake_binary)
             self.assertTrue(Path(kookvoice.ffmpeg_bin).samefile(fake_binary))
+
+
+class EmergencyRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        with kookvoice.state_lock:
+            kookvoice.play_list.clear()
+            kookvoice.guild_status.clear()
+            kookvoice.playlist_handle_status.clear()
+            kookvoice._active_handlers.clear()
+            kookvoice._recovering_channels.clear()
+            kookvoice._pending_leave_channels.clear()
+
+    def tearDown(self):
+        with kookvoice.state_lock:
+            kookvoice.play_list.clear()
+            kookvoice.guild_status.clear()
+            kookvoice.playlist_handle_status.clear()
+            kookvoice._active_handlers.clear()
+            kookvoice._recovering_channels.clear()
+            kookvoice._pending_leave_channels.clear()
+
+    async def test_recovery_finishes_without_force_when_handlers_exit(self):
+        channels = {"channel-a", "channel-b"}
+        with (
+            mock.patch.object(
+                windows_app.kookvoice,
+                "reset_playback_state",
+                return_value=channels,
+            ),
+            mock.patch.object(
+                windows_app,
+                "_force_leave_voice_channels",
+                new=mock.AsyncMock(return_value=({"channel-a"}, {"channel-b": "gone"})),
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "wait_for_handlers",
+                return_value=set(),
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "force_terminate_handler_processes",
+            ) as force_kill,
+            mock.patch.object(
+                windows_app.kookvoice,
+                "finish_playback_recovery",
+            ) as finish_recovery,
+        ):
+            report = await windows_app._perform_playback_recovery()
+
+        self.assertEqual(report["channels"], channels)
+        self.assertEqual(report["graceful"], channels)
+        self.assertEqual(report["left"], {"channel-a"})
+        self.assertEqual(report["leave_failed"], {"channel-b": "gone"})
+        self.assertEqual(report["killed_processes"], 0)
+        force_kill.assert_not_called()
+        finish_recovery.assert_called_once_with(channels, {"channel-b"})
+
+    async def test_recovery_escalates_to_kill_and_detach(self):
+        channels = {"channel-a"}
+        with (
+            mock.patch.object(
+                windows_app.kookvoice,
+                "reset_playback_state",
+                return_value=channels,
+            ),
+            mock.patch.object(
+                windows_app,
+                "_force_leave_voice_channels",
+                new=mock.AsyncMock(return_value=(channels, {})),
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "wait_for_handlers",
+                side_effect=[channels, channels],
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "force_terminate_handler_processes",
+                side_effect=[2, 1],
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "detach_stuck_handlers",
+                return_value=channels,
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "finish_playback_recovery",
+            ) as finish_recovery,
+        ):
+            report = await windows_app._perform_playback_recovery()
+
+        self.assertEqual(report["graceful"], set())
+        self.assertEqual(report["forced"], set())
+        self.assertEqual(report["detached"], channels)
+        self.assertEqual(report["killed_processes"], 3)
+        finish_recovery.assert_called_once_with(channels, set())
+
+    async def test_detach_waits_for_inflight_leave_before_releasing_channel(self):
+        channel_id = "leave-race"
+        leave_started = threading.Event()
+        leave_cancelled = threading.Event()
+        allow_leave_to_finish = threading.Event()
+
+        class BlockingRequestor:
+            async def leave(self, _channel_id):
+                leave_started.set()
+                try:
+                    while not allow_leave_to_finish.is_set():
+                        await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    # 模拟底层网络调用未立即响应取消，验证隔离握手仍会等待。
+                    leave_cancelled.set()
+                    while not allow_leave_to_finish.is_set():
+                        await asyncio.sleep(0.01)
+
+            async def close(self):
+                return None
+
+        handler = kookvoice.PlayHandler(channel_id, "token")
+        handler.requestor = BlockingRequestor()
+        handler._loop = asyncio.get_running_loop()
+        with kookvoice.state_lock:
+            kookvoice._active_handlers[channel_id] = handler
+            kookvoice.play_list[channel_id] = kookvoice._new_channel_state(
+                channel_id,
+                "token",
+                "guild-1",
+            )
+            kookvoice.guild_status[channel_id] = kookvoice.Status.STOP
+
+        start_event = asyncio.Event()
+        start_event.set()
+        stop_task = asyncio.create_task(handler.stop(start_event))
+        self.assertTrue(await asyncio.to_thread(leave_started.wait, 1.0))
+
+        detach_task = asyncio.create_task(
+            asyncio.to_thread(
+                kookvoice.detach_stuck_handlers,
+                {channel_id},
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        self.assertTrue(leave_cancelled.is_set())
+        self.assertFalse(detach_task.done())
+        with kookvoice.state_lock:
+            self.assertIs(kookvoice._active_handlers[channel_id], handler)
+
+        allow_leave_to_finish.set()
+        await asyncio.wait_for(stop_task, timeout=1.0)
+        await asyncio.wait_for(detach_task, timeout=1.0)
+        with kookvoice.state_lock:
+            self.assertNotIn(channel_id, kookvoice._active_handlers)
+
+    async def test_emergency_stop_delegates_leave_to_command_requestor(self):
+        channel_id = "delegated-leave"
+
+        class RecordingRequestor:
+            def __init__(self):
+                self.leave_calls = 0
+                self.close_calls = 0
+
+            async def leave(self, _channel_id):
+                self.leave_calls += 1
+
+            async def close(self):
+                self.close_calls += 1
+
+        handler = kookvoice.PlayHandler(channel_id, "token")
+        requestor = RecordingRequestor()
+        handler.requestor = requestor
+        with kookvoice.state_lock:
+            kookvoice._active_handlers[channel_id] = handler
+            kookvoice.play_list[channel_id] = kookvoice._new_channel_state(
+                channel_id,
+                "token",
+                "guild-1",
+            )
+
+        handler.request_stop()
+        start_event = asyncio.Event()
+        start_event.set()
+        await handler.stop(start_event)
+
+        self.assertEqual(requestor.leave_calls, 0)
+        self.assertEqual(requestor.close_calls, 1)
+        self.assertTrue(handler.finished.is_set())
 
 
 class FakeResponse:

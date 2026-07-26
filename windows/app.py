@@ -50,6 +50,7 @@ try:
     from . import kookvoice
     from .kookvoice.requestor import VoiceRequestor
     from .config import *
+    from .runtime_health import runtime_health
     from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
     from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
@@ -57,6 +58,7 @@ except ImportError:
     import kookvoice
     from kookvoice.requestor import VoiceRequestor
     from config import *
+    from runtime_health import runtime_health
     from utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
     from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
@@ -128,6 +130,30 @@ bot = Bot(
     token=BOT_TOKEN,
     compress=True  # 启用压缩
 )
+
+
+def _install_gateway_activity_probe():
+    """把任意 KOOK 网关数据包（包括 Pong）记录为连接活动。"""
+    receiver = getattr(getattr(bot.client, "gate", None), "receiver", None)
+    original = getattr(receiver, "_handle_raw", None)
+    if receiver is None or original is None:
+        logger.warning("[机器人] 当前 khl.py 版本不支持网关活动探针")
+        return False
+    if getattr(receiver, "_kook_music_health_probe", False):
+        runtime_health.mark_gateway_probe_available()
+        return True
+
+    async def _monitored_handle_raw(raw):
+        runtime_health.mark_gateway_activity()
+        return await original(raw)
+
+    receiver._handle_raw = _monitored_handle_raw
+    receiver._kook_music_health_probe = True
+    runtime_health.mark_gateway_probe_available()
+    return True
+
+
+_install_gateway_activity_probe()
 
 # ========== 权限白名单 ==========
 def _is_allowed(msg: Message) -> bool:
@@ -534,44 +560,181 @@ async def shuffle_cmd(msg: Message):
         logger.error(f"[命令:随机播放] 出错: {e}")
         await msg.reply("⚠️ 操作失败，请稍后再试")
 
+_playback_recovery_lock = threading.Lock()
+
+
+async def _force_leave_voice_channels(channel_ids):
+    """并发请求 KOOK 强制离开频道，返回确认成功与失败明细。"""
+    if not channel_ids:
+        return set(), {}
+
+    requestor = VoiceRequestor(BOT_TOKEN)
+
+    async def leave_one(channel_id):
+        try:
+            await asyncio.wait_for(requestor.leave(channel_id), timeout=5)
+            logger.info("[脱离卡死] KOOK已确认离开频道: %s", channel_id)
+            return channel_id, None
+        except Exception as exc:
+            logger.warning(
+                "[脱离卡死] 离开频道 %s 未获确认（可能已经离开）: %s",
+                channel_id,
+                exc,
+            )
+            return channel_id, str(exc)
+
+    try:
+        results = await asyncio.gather(
+            *(leave_one(channel_id) for channel_id in channel_ids)
+        )
+    finally:
+        try:
+            await asyncio.wait_for(requestor.close(), timeout=2)
+        except Exception:
+            logger.exception("[脱离卡死] 关闭紧急KOOK请求会话失败")
+
+    left = {channel_id for channel_id, error in results if error is None}
+    failed = {
+        channel_id: error
+        for channel_id, error in results
+        if error is not None
+    }
+    return left, failed
+
+
+async def _perform_playback_recovery():
+    """执行分阶段恢复，始终返回可用于用户反馈的恢复报告。"""
+    all_channels = kookvoice.reset_playback_state()
+    report = {
+        'channels': set(all_channels),
+        'left': set(),
+        'leave_failed': {},
+        'graceful': set(),
+        'forced': set(),
+        'detached': set(),
+        'killed_processes': 0,
+    }
+    if not all_channels:
+        return report
+
+    unconfirmed_leave = set(all_channels)
+    try:
+        # KOOK脱离和本地Handler退出并行进行，避免多频道串行等待。
+        leave_result, remaining = await asyncio.gather(
+            _force_leave_voice_channels(all_channels),
+            asyncio.to_thread(
+                kookvoice.wait_for_handlers,
+                all_channels,
+                5.0,
+            ),
+        )
+        report['left'], report['leave_failed'] = leave_result
+        report['graceful'] = set(all_channels) - set(remaining)
+
+        if remaining:
+            report['killed_processes'] += await asyncio.to_thread(
+                kookvoice.force_terminate_handler_processes,
+                remaining,
+            )
+            remaining_after_force = await asyncio.to_thread(
+                kookvoice.wait_for_handlers,
+                remaining,
+                2.0,
+            )
+            report['forced'] = set(remaining) - set(remaining_after_force)
+
+            if remaining_after_force:
+                report['killed_processes'] += await asyncio.to_thread(
+                    kookvoice.force_terminate_handler_processes,
+                    remaining_after_force,
+                )
+                # 最后手段：隔离旧Handler并释放频道注册表。旧线程迟到退出时会
+                # 发现自己已失去所有权，因此不会离开或删除后续的新会话。
+                report['detached'] = await asyncio.to_thread(
+                    kookvoice.detach_stuck_handlers,
+                    remaining_after_force,
+                )
+    finally:
+        try:
+            # 本地处理器已停止或隔离后再做一次最终脱离，覆盖“旧 join
+            # 与首次 leave 交错”的窗口。恢复栅栏保证此时不会创建新会话。
+            final_left, final_failed = await _force_leave_voice_channels(
+                all_channels
+            )
+            report['left'].update(final_left)
+            report['leave_failed'].update(final_failed)
+            for channel_id in report['left']:
+                report['leave_failed'].pop(channel_id, None)
+            unconfirmed_leave = set(report['leave_failed'])
+        finally:
+            kookvoice.finish_playback_recovery(
+                all_channels,
+                unconfirmed_leave,
+            )
+
+    return report
+
+
 @bot.command(name='脱离卡死')
 async def reset_all_cmd(msg: Message):
-    """重置所有播放状态与服务器监听"""
-    logger.info(f"[命令:脱离卡死] 用户={msg.author_id}")
+    """分阶段恢复所有播放会话，并隔离无法退出的旧处理器。"""
+    logger.info("[命令:脱离卡死] 用户=%s", msg.author_id)
+    if not _playback_recovery_lock.acquire(blocking=False):
+        await msg.reply("⏳ 紧急恢复正在执行，请勿重复触发")
+        return
 
-    # 原子发送 STOP；实际删除由各 Handler 完成，避免旧线程误删新会话。
-    all_channels = kookvoice.reset_playback_state()
-    stopped = len(all_channels)
+    try:
+        report = await _perform_playback_recovery()
+    except Exception:
+        logger.exception("[命令:脱离卡死] 紧急恢复流程异常")
+        await msg.reply("⚠️ 紧急恢复执行异常，请查看 debug.log；看门狗仍会继续检测")
+        return
+    finally:
+        _playback_recovery_lock.release()
 
-    # 第一步：通过 KOOK API 强制离开所有语音频道，从根源切断 RTP 连接
-    # 即使 PlayHandler 线程卡死在 I/O 上，RTP 断开后 FFmpeg 也会因 broken pipe 退出
-    for ch_id in all_channels:
-        vr = VoiceRequestor(BOT_TOKEN)
-        try:
-            await asyncio.wait_for(vr.leave(ch_id), timeout=5)
-            logger.info(f"[脱离卡死] 已离开语音频道: {ch_id}")
-        except Exception as e:
-            logger.warning(f"[脱离卡死] 离开频道 {ch_id} 失败（可忽略）: {e}")
-        finally:
-            await vr.close()
+    channel_count = len(report['channels'])
+    if channel_count == 0:
+        await msg.reply("ℹ️ 当前没有需要恢复的播放会话")
+        return
 
-    remaining = await asyncio.to_thread(
-        kookvoice.wait_for_handlers,
-        all_channels,
-        5.0,
-    )
     logger.info(
-        "[命令:脱离卡死] 已重置 %d 个频道，仍在退出=%d",
-        stopped,
-        len(remaining),
+        "[命令:脱离卡死] 完成 channels=%d left=%d graceful=%d "
+        "forced=%d detached=%d killed_processes=%d leave_failed=%d",
+        channel_count,
+        len(report['left']),
+        len(report['graceful']),
+        len(report['forced']),
+        len(report['detached']),
+        report['killed_processes'],
+        len(report['leave_failed']),
     )
-    if remaining:
+
+    if report['leave_failed']:
         await msg.reply(
-            f"⚠️ 已强制脱离 {stopped} 个频道；"
-            f"仍有 {len(remaining)} 个处理器正在退出，请稍后再试"
+            "⚠️ 本地恢复已完成，但 KOOK 脱离未全部确认\n"
+            f"▎处理频道: {channel_count}\n"
+            f"▎未确认脱离: {len(report['leave_failed'])}\n"
+            f"▎强制结束媒体进程: {report['killed_processes']}\n"
+            f"▎隔离旧处理器: {len(report['detached'])}\n"
+            "失败频道已保留，请再次执行 /脱离卡死 后再点歌"
+        )
+    elif report['detached']:
+        await msg.reply(
+            "⚠️ 紧急恢复已完成，可重新点歌\n"
+            f"▎处理频道: {channel_count}\n"
+            f"▎正常退出: {len(report['graceful'])}\n"
+            f"▎强制结束媒体进程: {report['killed_processes']}\n"
+            f"▎隔离旧处理器: {len(report['detached'])}\n"
+            "旧处理器已失去会话所有权，不会清理后续新会话"
         )
     else:
-        await msg.reply(f"✅ 已重置所有状态（共 {stopped} 个频道）")
+        await msg.reply(
+            "✅ 紧急恢复完成，可重新点歌\n"
+            f"▎处理频道: {channel_count}\n"
+            f"▎KOOK确认脱离: {len(report['left'])}\n"
+            f"▎正常退出: {len(report['graceful'])}\n"
+            f"▎强制退出: {len(report['forced'])}"
+        )
 
 @bot.command(name='wygd')
 async def playlist_play(msg: Message, playlist_input: str = ''):
@@ -1248,7 +1411,7 @@ async def help_cmd(msg: Message):
         "/播放第N首 — 切到队列第N首歌\n"
         "/停止 — 停止播放\n"
         "/清空列表 — 清空播放队列\n"
-        "/脱离卡死 — 重置所有播放状态\n\n"
+        "/脱离卡死 — 分阶段强制恢复播放会话\n\n"
         "📋 **查询**\n"
         "/播放列表 `[页数]` — 查看当前播放队列（20首/页）\n"
         "/当前账号 — 查看登录的网易云账号\n"
@@ -1312,6 +1475,7 @@ def start_bot_loop():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     kookvoice.set_loop(loop)  # 建立线程安全的桥接，使 PlayHandler 能调度事件到 bot 事件循环
+    runtime_health.mark_bot_state("starting")
 
     def _shutdown_loop():
         """优雅关闭事件循环：取消所有待处理任务，避免 Windows ProactorEventLoop 管道泄漏"""
@@ -1335,16 +1499,19 @@ def start_bot_loop():
         logger.info("[机器人] 验证Token...")
         if not loop.run_until_complete(verify_token()):
             logger.error("Token验证失败，请检查配置")
+            state = "configuration_error" if not str(BOT_TOKEN).strip() else "failed"
+            runtime_health.mark_bot_state(state, "Token验证失败")
             _shutdown_loop()
             return
 
         # 预先在事件循环中启动心跳任务（必须在 bot.start() 前调度，因为 bot.start() 是长连接协程不返回）
         async def _heartbeat_task():
             while True:
+                runtime_health.mark_loop_heartbeat()
                 try:
                     _write_heartbeat(BOT_HEARTBEAT_FILE)
                 except Exception:
-                    logger.exception("更新Bot心跳失败")
+                    logger.warning("更新Bot心跳文件失败（内存心跳仍有效）", exc_info=True)
                 await asyncio.sleep(30)
         loop.create_task(_heartbeat_task())
         logger.info("[机器人] 心跳任务已就绪")
@@ -1352,19 +1519,12 @@ def start_bot_loop():
         # 启动机器人（阻塞协程，处理 WebSocket 网关直到断开）
         logger.info("[机器人] 启动中...")
         loop.run_until_complete(bot.start())
+        runtime_health.mark_bot_state("failed", "bot.start() 意外返回")
+        logger.error("[机器人] bot.start() 意外返回，交由看门狗恢复")
 
     except Exception as e:
         logger.error(f"[机器人] 启动异常: {str(e)}")
-        _shutdown_loop()
-        return
-
-    # 保持运行
-    try:
-        loop.run_forever()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("[机器人] 收到退出信号")
-    except Exception as e:
-        logger.error(f"[机器人] 运行异常: {e}")
+        runtime_health.mark_bot_state("failed", str(e))
     finally:
         _shutdown_loop()
         try:
@@ -1434,8 +1594,10 @@ def create_app():
 @app.route('/api/debug')
 def debug():
     try:
-        # 测试基础功能
-        bot_status = "运行中" if bot.is_running else "未运行"
+        health = runtime_health.snapshot()
+        loop_age = health.age(health.loop_heartbeat_at)
+        gateway_age = health.age(health.gateway_heartbeat_at)
+        bot_status = "运行中" if runtime_health.bot_is_healthy() else "异常或启动中"
         
         # 添加播放列表信息
         snapshot = kookvoice.get_state_snapshot()
@@ -1451,6 +1613,11 @@ def debug():
         return jsonify({
             "status": "success",
             "bot_status": bot_status,
+            "bot_state": health.bot_state,
+            "bot_failure_reason": health.bot_failure_reason,
+            "bot_loop_heartbeat_age": loop_age,
+            "kook_gateway_probe_available": health.gateway_probe_available,
+            "kook_gateway_heartbeat_age": gateway_age,
             "active_guilds": active_guilds,
             "playing_songs": playing_songs,
             "queued_songs": queued_songs,

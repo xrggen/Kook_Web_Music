@@ -8,17 +8,27 @@ PORT = 5000
 # KOOK机器人配置
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token_here")
 
-# FFMPEG配置 - 优先使用有效的显式配置，项目搬迁后自动回退到随包二进制
-current_dir = os.path.dirname(os.path.abspath(__file__))
+# Windows 版的相对路径统一相对于本文件所在目录解析，避免从快捷方式、
+# 计划任务或看门狗重启后因工作目录变化而指向错误位置。
+current_dir = os.path.dirname(os.path.realpath(__file__))
+
+
+def _resolve_project_path(value):
+    value = os.path.expandvars(os.path.expanduser(str(value).strip()))
+    if not os.path.isabs(value):
+        value = os.path.join(current_dir, value)
+    return os.path.realpath(os.path.abspath(value))
 
 
 def _resolve_bundled_tool(env_name, executable):
     configured = os.environ.get(env_name, "").strip()
-    bundled = os.path.join(current_dir, "ffmpeg", "bin", executable)
+    bundled = _resolve_project_path(os.path.join("ffmpeg", "bin", executable))
+    if configured:
+        configured = _resolve_project_path(configured)
     if configured and os.path.isfile(configured):
-        return os.path.abspath(configured)
+        return configured
     if os.path.isfile(bundled):
-        return os.path.abspath(bundled)
+        return bundled
     return configured or bundled
 
 
@@ -33,15 +43,13 @@ BACKUP_MUSIC_API = "https://api.music.liuzhijin.cn"
 
 # QQ音乐API配置
 QQ_MUSIC_API_BASE = os.environ.get("QQ_MUSIC_API_BASE", "http://localhost:3200")
-QQ_COOKIE_TXT_PATH = os.environ.get(
-    "QQ_COOKIE_PATH",
-    os.path.join(current_dir, "Cookie", "qq_cookie.txt")
+QQ_COOKIE_TXT_PATH = _resolve_project_path(
+    os.environ.get("QQ_COOKIE_PATH", os.path.join("Cookie", "qq_cookie.txt"))
 )
 
 # B站配置
-BILI_COOKIE_TXT_PATH = os.environ.get(
-    "BILI_COOKIE_PATH",
-    os.path.join(current_dir, "Cookie", "bili_cookie.txt")
+BILI_COOKIE_TXT_PATH = _resolve_project_path(
+    os.environ.get("BILI_COOKIE_PATH", os.path.join("Cookie", "bili_cookie.txt"))
 )
 
 # 权限白名单 — 留空表示不启用该维度过滤，全部非空时取交集

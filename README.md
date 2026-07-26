@@ -1,12 +1,13 @@
 # KOOK音乐机器人 Web控制台
 
-> **当前版本**: V2.7.4 | **发布日期**: 2026-07-26
+> **当前版本**: V2.7.5 | **发布日期**: 2026-07-26
 
 ### 版本历史
 
 | 版本 | 日期 | 类型 | 说明 |
 |------|------|------|------|
-| **V2.7.4** | 2026-07-26 | 架构修复 | Windows 主线稳定性重构：同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁并提供只读快照；FFmpeg/ffprobe 子进程改为参数化启动、超时与幂等回收；Bot/Web 心跳拆分并支持完整进程自愈；端口清理增加进程归属校验；应用工厂、日志轮转、前端频道状态及 QQ 歌单分页同步修复；新增 9 项稳定性测试 |
+| **V2.7.5** | 2026-07-26 | 稳定性修复 | 重构 Windows 看门狗：以进程内单调时钟分别监测 Bot 事件循环和 KOOK 网关活动，增加 180 秒启动宽限、Web/网易云/QQ API 探针与单组件恢复；连续故障才执行完整重启，15 分钟最多 3 次并递增退避；重启前复用 `/脱离卡死` 清理播放会话并回收 Node 进程树；Python、`run.py`、Node/npm、`.env`、FFmpeg/ffprobe 和 Cookie 路径全部确定化，原位重启失败时可拉起替代进程；新增 12 项看门狗测试，总计 30 项 |
+| **V2.7.4** | 2026-07-26 | 架构修复 | Windows 主线稳定性重构：同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁并提供只读快照；FFmpeg/ffprobe 子进程改为参数化启动、超时、身份校验与幂等回收；`/脱离卡死` 改为带频道栅栏的分阶段恢复；Bot/Web 心跳拆分并支持完整进程自愈；端口清理增加进程归属校验；应用工厂、日志轮转、前端频道状态及 QQ 歌单分页同步修复；新增 18 项稳定性测试 |
 | **V2.7.3** | 2026-06-17 | 修复 | `/qqgd` 修复他人歌单导入失败：改用 `u6.y.qq.com` 签名 API（移植 GoMusic 方案），无需 cookie 支持任意公开歌单，支持分页（>30首）；修复 KOOK Markdown 链接 `[url](url)` 导致歌单 ID 提取错误（`/wygd` `/qqgd` `/bili歌单`）；修复 `/停止` 后残留 STOP 状态阻止下次自动播放 |
 | **V2.7.2** | 2026-06-09 | 修复 | B站音频解码完整修复：`create_subprocess_exec` 替代 shell 避免 URL 中 `%` 被 cmd.exe 破坏；BV 号直解析跳过搜索；Session 预热绕过 -412 风控；解码失败快速跳过；UID 脱敏 |
 | **V2.7.1** | 2026-06-09 | 修复 | B站二维码登录修复：QR API 域名修正为 `passport.bilibili.com`；服务端本地生成 QR 图片替代第三方 API；`/帮助` 指令新增 B站 四个指令 |
@@ -29,14 +30,15 @@
 | **V1.3** | 2026-05-16 | 功能增强 | 修复 Node API 端口抢占、启动卡死、asyncio 管道泄漏等问题；新增看门狗自愈机制；新增 `/清空列表` 命令；新增切歌主动通知；重写 `/wygd` 对齐 Web 控制台分页逻辑、支持歌单链接格式、解除50首限制；歌单导入改为批量预取URL（每批5首）；新增 `/播放第N首` 命令 |
 | **V1.2** | 2026-05-15 | 初始版本 | 集成本地网易云音乐 API (NeteaseCloudMusicApi)；新增网易云账号管理页面 (`/account`)；新增 `/当前账号`、`/播放列表`、`/帮助` 机器人命令；完善全链路终端日志输出 |
 
-### V2.7.4 稳定性设计
+### V2.7.4–V2.7.5 稳定性设计
 
 - **单频道单处理器**：`Player.join()` 与 `add_music()` 共用受锁保护的处理器注册表，停止期间的新请求会等待旧处理器完成清理，避免重复 RTP 会话和旧线程误删新队列。
 - **安全连接与资源回收**：加入频道不再预先无条件离开；只有首次加入失败时才清理残留会话并重试。KOOK 请求复用带超时的 `aiohttp.ClientSession`，FFmpeg/ffprobe 在正常结束、异常和取消路径都会回收。
+- **紧急恢复分级升级**：`/脱离卡死` 先锁定恢复中的频道并线程安全地取消播放任务，并发请求 KOOK 脱离和等待处理器退出；超时后终止该处理器登记的 FFmpeg/ffprobe，最后隔离仍卡住的旧处理器，并在解除频道栅栏前再次确认 KOOK 脱离。所有权校验保证旧线程迟到退出时不会清理新会话，未获 KOOK 确认的频道会保留为下一次恢复目标。
 - **并发状态边界**：播放线程、Bot 命令和 Web API 通过同一可重入锁修改状态，对外查询使用深拷贝快照；歌单预取采用“锁内取标记、锁外联网、锁内回填”。
-- **Windows 自愈与进程治理**：Bot 使用 `.bot_heartbeat`，Web 使用 `.web_heartbeat`；看门狗只以 Bot 心跳判断事件循环是否失联，连续异常后重启完整进程。3000/3200 端口仅清理工作目录属于本项目 API 的进程。
-- **可迁移部署**：无效的旧 FFmpeg/ffprobe 绝对路径会回退到随包二进制；运行日志统一写入可轮转的 `windows/debug.log`。
-- **验证**：新增 `windows/tests/test_stability.py`，覆盖并发加入、并发加歌、停止竞态、残留状态、状态快照和 QQ 分页终止条件；同时验证应用工厂幂等、关键路由和前端 JavaScript 语法。
+- **Windows 自愈与进程治理**：进程内单调时钟分别记录 Bot 事件循环与 KOOK 网关活动，Web、网易云 API、QQ API 使用独立 HTTP/进程探针。外部 API 连续异常时先单独拉起；完整重启前复用紧急播放恢复并回收 Node 进程树，15 分钟重启预算最多 3 次，避免永久重启风暴。3000/3200 端口仍只清理工作目录属于本项目 API 的进程。
+- **可迁移部署**：启动和重启固定使用绝对 Python、`run.py`、Node/npm 与 `windows` 工作目录；显式加载 `windows/.env`。FFmpeg、ffprobe 与 Cookie 的相对配置一律相对于 `windows` 解析，无效的旧媒体工具路径会回退到随包二进制；运行日志统一写入可轮转的 `windows/debug.log`。
+- **验证**：`windows/tests/test_stability.py` 18 项加 `windows/tests/test_watchdog.py` 12 项，共 30 项测试，覆盖播放并发与停止竞态、紧急恢复、媒体进程身份校验、状态快照、QQ 分页，以及启动宽限、网关失联与兼容降级、连续故障复位、配置错误阻断、组件恢复、重启预算、替代进程和路径确定性。
 
 ---
 
@@ -50,6 +52,8 @@ Kook_Web_Music/
 │   ├── run.py                        # 应用入口，自动启动Node API服务 + Flask
 │   ├── app.py                        # Flask应用核心 + 全部KOOK机器人命令
 │   ├── config.py                     # 配置文件（Token、FFmpeg、API地址、ACL）
+│   ├── runtime_health.py              # 线程安全的事件循环/KOOK网关健康状态
+│   ├── service_watchdog.py            # 无副作用的看门狗判定器
 │   ├── routes.py                     # Web API路由（服务器/频道/播放控制/系统监控）
 │   ├── utils.py                      # 网易云工具（搜索/URL/歌单/标记模式）
 │   ├── qq_utils.py                   # QQ音乐工具（搜索/URL/歌单/Cookie验证）
@@ -80,6 +84,7 @@ Kook_Web_Music/
 │   ├── save_cookie.py                 # 手动保存Cookie脚本
 │   ├── create_env.py                  # .env文件创建脚本
 │   ├── tests/test_stability.py         # 播放并发、停止竞态与QQ分页稳定性测试
+│   ├── tests/test_watchdog.py          # 看门狗判定、重启预算与路径测试
 │   ├── NeteaseCloudMusicApi/          # 本地网易云API（Node.js Express, 端口3000）
 │   ├── qq-music-api/                  # 本地QQ音乐API（Koa2 TypeScript, 端口3200）
 │   └── ffmpeg/                        # FFmpeg工具（bin/ffmpeg.exe + ffprobe.exe）
@@ -148,7 +153,7 @@ Kook_Web_Music/
 | | `/单曲循环` / `/随机播放` | 切换播放模式 |
 | | `/播放第N首` | 切到队列第N首歌 |
 | | `/清空列表` | 清空播放队列 |
-| | `/脱离卡死` | 重置所有播放状态（多级容错） |
+| | `/脱离卡死` | 分阶段恢复播放会话（取消任务 → KOOK脱离 → 媒体进程终止 → 旧处理器隔离） |
 | **查询** | `/播放列表 [页数]` | 分页查看播放队列（20首/页） |
 | | `/版本信息` | 查看当前版本与历史版本 |
 | | `/帮助` | 显示所有可用指令 |
@@ -167,7 +172,7 @@ Kook_Web_Music/
 | 前端交互 | jQuery 3.6, Chart.js（监控页面） |
 | 实时通信 | Socket.IO (flask-socketio 5.1) |
 | 音乐数据 | 本地 Node API (NeteaseCloudMusicApi + qq-music-api) + B站公开REST API |
-| 系统监控 | psutil（Ubuntu版） |
+| 系统与进程治理 | psutil（媒体进程身份校验、Windows端口治理与系统监控） |
 
 ## 快速开始
 
@@ -267,6 +272,13 @@ python save_cookie.py "你的Cookie字符串"
 | `ALLOWCHANNEL` | 频道ID白名单（逗号分隔） | 空（不限制） |
 | `ALLOWUSER` | 用户ID白名单（逗号分隔） | 空（不限制） |
 | `CMD_ALLOWUSER` | CMD指令用户白名单 | 空（全员无权限） |
+| `WATCHDOG_STARTUP_GRACE` | 启动宽限秒数 | `180` |
+| `WATCHDOG_LOOP_TIMEOUT` / `WATCHDOG_GATEWAY_TIMEOUT` | Bot事件循环 / KOOK网关超时秒数 | `90` / `90` |
+| `WATCHDOG_INTERVAL` / `WATCHDOG_FAILURES` | 检查间隔 / 连续故障阈值 | `15` / `3` |
+| `WATCHDOG_REPAIR_COOLDOWN` | 外部API单独恢复冷却秒数 | `60` |
+| `WATCHDOG_RESTART_WINDOW` / `WATCHDOG_MAX_RESTARTS` | 完整重启预算时间窗 / 次数 | `900` / `3` |
+
+Windows 版中，`.env` 固定从 `windows/.env` 加载；`FFMPEG_PATH`、`FFPROBE_PATH`、`QQ_COOKIE_PATH`、`BILI_COOKIE_PATH` 的相对路径均以 `windows` 目录为基准，不受启动快捷方式或看门狗重启时的当前目录影响。
 
 ### 权限白名单
 
@@ -356,9 +368,11 @@ python save_cookie.py "你的Cookie字符串"
 - QQ音乐Cookie含多字段过期检测（2分钟缓存）；B站通过 `/x/web-interface/nav` 验证
 
 ### 看门狗自愈
-- Bot 事件循环每30秒更新 `.bot_heartbeat`，Flask 请求独立更新 `.web_heartbeat`
-- 后台看门狗仅监测 Bot 心跳，避免活跃的 Web 请求掩盖 Bot 卡死
-- 心跳连续3次超时后清理本地音乐 API 子进程，并以相同启动参数重启完整 Python 进程
+- Bot 事件循环每30秒更新内存心跳，并尽力写入 `.bot_heartbeat`；KOOK WebSocket 数据包（含 Pong）独立更新网关活动，Flask 请求使用 `.web_heartbeat`
+- 启动完成后保留180秒宽限；随后同时检查事件循环、KOOK网关、Web、网易云 API 与 QQ API，健康恢复会清零连续故障计数
+- 外部 API 连续异常优先单独重启；仍未恢复或 Bot/Web 持续异常时，连续3次检查后执行完整重启
+- 完整重启先执行播放会话紧急清理，再回收 Node 进程树；重启命令使用绝对 Python 和 `run.py`，工作目录固定为 `windows`
+- 15分钟内最多自动重启3次，延迟依次为0/30/120秒；超过预算后保留进程与日志供人工检查
 
 ## Windows版与Ubuntu版差异
 

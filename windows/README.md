@@ -1,12 +1,13 @@
 # KOOK音乐机器人 Web控制台 (Windows)
 
-> **当前版本**: V2.7.4 | **发布日期**: 2026-07-26
+> **当前版本**: V2.7.5 | **发布日期**: 2026-07-26
 
 ### 版本历史
 
 | 版本 | 日期 | 类型 | 说明 |
 |------|------|------|------|
-| **V2.7.4** | 2026-07-26 | 架构修复 | 同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁和快照；FFmpeg/ffprobe 参数化启动、超时与幂等回收；Bot/Web 双心跳及完整进程自愈；端口进程归属校验；应用工厂、轮转日志、前端频道状态与 QQ 歌单分页修复；新增 9 项稳定性测试 |
+| **V2.7.5** | 2026-07-26 | 稳定性修复 | 看门狗改为分别监测 Bot 事件循环、KOOK 网关、Web 与双 Node API；加入启动宽限、单组件恢复、连续故障判定、15 分钟最多 3 次的重启预算与退避；完整重启前清理播放会话和 Node 进程树；Python、`run.py`、Node/npm、`.env`、媒体工具及 Cookie 路径确定化；新增 12 项看门狗测试，总计 30 项 |
+| **V2.7.4** | 2026-07-26 | 架构修复 | 同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁和快照；FFmpeg/ffprobe 参数化启动、超时、身份校验与幂等回收；`/脱离卡死` 改为带频道栅栏的分阶段恢复；Bot/Web 双心跳及完整进程自愈；端口进程归属校验；应用工厂、轮转日志、前端频道状态与 QQ 歌单分页修复；新增 18 项稳定性测试 |
 | **V2.7.3** | 2026-06-15 | 功能增强 | 新增 `/cmd` 指令：在服务器执行 CMD 命令并返回输出（超时120秒、输出截断1900字符）；新增 `CMD_ALLOWUSER` 强管控（留空全员无权限，与全局白名单取交集） |
 | **V2.7.2** | 2026-06-09 | 修复 | B站音频解码完整修复：解码器改用 `create_subprocess_exec`（参数列表）消除 Windows cmd.exe 对 URL 中 `%` 编码字符的变量展开破坏；新增 BV 号直解析路径（`/bili BVxxxx` 跳过搜索 API 避免 -412 风控）；新增共享 `requests.Session` 双域名预热获取 `buvid3` 设备 Cookie；解码失败快速跳过不再干等；`/bili当前账号` UID 脱敏 |
 | **V2.7.1** | 2026-06-09 | 修复 | B站二维码登录修复：QR API 域名从 `api.bilibili.com` 修正为 `passport.bilibili.com`（generate/poll 端点位于 passport 子域）；服务端本地生成 QR 图片（`qrcode`+`Pillow`）替代第三方 QR API，消除前端对外部服务的依赖；`/帮助` 指令新增 B站 四个指令 |
@@ -29,15 +30,16 @@
 | **V1.3** | 2026-05-16 | 功能增强 | 修复 Node API 端口抢占、启动卡死、asyncio 管道泄漏等问题；新增看门狗自愈机制；新增 `/清空列表` 命令；新增切歌主动通知；重写 `/wygd` 对齐 Web 控制台分页逻辑、支持完整歌单链接、解除50首限制；歌单导入改为批量预取URL（每批5首）；新增 `/播放第N首` 命令 |
 | **V1.2** | 2026-05-15 | 初始版本 | 集成本地网易云音乐 API (NeteaseCloudMusicApi)；新增网易云账号管理页面；新增 `/当前账号`、`/播放列表`、`/帮助` 命令；完善全链路终端日志输出 |
 
-### V2.7.4 稳定性设计
+### V2.7.4–V2.7.5 稳定性设计
 
 - `Player`、Bot 命令和 Web API 共享受锁保护的频道状态；查询接口读取深拷贝快照。
 - 每个语音频道最多运行一个 `PlayHandler`。停止过程中，新点歌请求会等待旧处理器完成离开与资源清理。
 - KOOK 语音请求复用带超时的 `aiohttp.ClientSession`；单次保活失败不会立即断开，连续3次失败才退出会话。
 - FFmpeg/ffprobe 使用参数列表启动，不经过 `cmd.exe`；正常结束、异常和任务取消都会回收子进程。
-- `.bot_heartbeat` 与 `.web_heartbeat` 分离；Bot 持续失联后，看门狗会清理子进程并重启完整应用。
-- 端口清理通过 `psutil` 验证进程工作目录，只终止本项目的 Node API；失效的旧 FFmpeg 路径自动回退到随包二进制。
-- `tests/test_stability.py` 覆盖并发加入、并发加歌、停止竞态、残留状态、快照隔离和 QQ 分页终止条件。
+- `/脱离卡死` 采用分阶段恢复：先锁定恢复中的频道并线程安全取消播放任务，同时请求 KOOK 脱离并等待处理器；超时后只终止该处理器登记且身份校验通过的 FFmpeg/ffprobe，最终隔离旧处理器、再次确认 KOOK 脱离，再解除频道栅栏供用户重新点歌；未获 KOOK 确认的频道会保留为下一次恢复目标。
+- 看门狗分别使用进程内单调时钟监测 Bot 事件循环与 KOOK 网关活动，并探测 Web、网易云 API、QQ API；先单独恢复异常 API，再按连续故障阈值完整重启。完整重启前清理播放会话和 Node 进程树，并受 15 分钟最多 3 次的预算保护。
+- 端口清理通过 `psutil` 验证进程工作目录，只终止本项目的 Node API；启动/重启固定使用绝对 Python、`run.py`、Node/npm 和 `windows` 工作目录，`.env`、媒体工具和 Cookie 相对路径统一以 `windows` 为基准。
+- `tests/test_stability.py` 18 项加 `tests/test_watchdog.py` 12 项，共 30 项测试，覆盖播放并发与紧急恢复、媒体进程身份校验、QQ 分页，以及看门狗宽限、网关失联与兼容降级、故障复位、组件恢复、重启预算、替代进程和路径确定性。
 
 ---
 
@@ -51,6 +53,8 @@ windows/
 ├── app.py                            # Flask应用核心 + KOOK机器人命令处理（含 /cmd 远程执行）
 ├── api.py                            # API Blueprint（统计信息）
 ├── config.py                         # 配置文件
+├── runtime_health.py                 # 事件循环与KOOK网关健康状态
+├── service_watchdog.py               # 可测试的看门狗判定器
 ├── routes.py                         # API路由注册
 ├── utils.py                          # 工具函数（音乐搜索/歌单获取/Cookie加载）
 ├── cookie_login.py                   # 网易云扫码登录脚本
@@ -81,6 +85,7 @@ windows/
 ├── ffmpeg/                           # FFmpeg二进制文件
 ├── ffmpeg.exe                        # Windows FFmpeg可执行文件
 ├── tests/test_stability.py           # 架构与稳定性回归测试
+├── tests/test_watchdog.py            # 看门狗与重启路径回归测试
 └── requirements.txt                  # Python依赖
 ```
 
@@ -180,6 +185,13 @@ python run.py
 | `ALLOWCHANNEL` | 频道ID白名单（逗号分隔） | 空（不限制） |
 | `ALLOWUSER` | 用户ID白名单（逗号分隔） | 空（不限制） |
 | `CMD_ALLOWUSER` | `/cmd` 指令用户白名单，**留空全员无权限** | 空（全员禁用） |
+| `WATCHDOG_STARTUP_GRACE` | 启动宽限秒数 | `180` |
+| `WATCHDOG_LOOP_TIMEOUT` / `WATCHDOG_GATEWAY_TIMEOUT` | 事件循环 / KOOK网关超时秒数 | `90` / `90` |
+| `WATCHDOG_INTERVAL` / `WATCHDOG_FAILURES` | 检查间隔 / 连续故障阈值 | `15` / `3` |
+| `WATCHDOG_REPAIR_COOLDOWN` | 外部API恢复冷却秒数 | `60` |
+| `WATCHDOG_RESTART_WINDOW` / `WATCHDOG_MAX_RESTARTS` | 重启预算时间窗 / 次数 | `900` / `3` |
+
+`.env` 固定从本目录加载；`FFMPEG_PATH`、`FFPROBE_PATH`、`QQ_COOKIE_PATH`、`BILI_COOKIE_PATH` 的相对值均相对于 `windows` 目录解析。
 
 ### 权限白名单
 
@@ -216,7 +228,7 @@ python run.py
 5. 每个频道最多启动一个 `PlayHandler`，通过 FFmpeg 双进程管道实现推流：
    - 解码进程：下载音频 → 解码为 WAV
    - 编码进程：WAV → Opus → RTP 推流到 KOOK 语音服务器
-6. Bot 与 Web 使用独立心跳；Bot 连续失联时由 `run.py` 看门狗执行完整进程重启
+6. 看门狗分别监测 Bot 事件循环、KOOK 网关、Web 和双 Node API；连续异常时先恢复组件，再按受限预算执行完整重启
 
 ### 本地API自动管理
 - `run.py` 启动时自动拉起两个本地API：
@@ -225,6 +237,7 @@ python run.py
 - 进程退出(Ctrl+C / 进程终止)时自动停止所有API服务
 - 使用 `atexit` + `signal` 双重保障清理
 - Windows 端口清理会通过 `psutil` 校验进程工作目录，不会终止非本项目进程
+- 看门狗重启前会清理播放会话并回收 Node 进程树；重启始终使用绝对 Python/`run.py` 和本目录工作路径
 
 ## 许可证
 

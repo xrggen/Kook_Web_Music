@@ -6,7 +6,7 @@ BOT_TOKEN=your_bot_token_here
 
 # FFMPEG配置 — 按实际路径填写
 FFMPEG_PATH=./ffmpeg/bin/ffmpeg.exe
-FFPROBE_PATH=./ffprobe.exe
+FFPROBE_PATH=./ffmpeg/bin/ffprobe.exe
 
 # 音乐API配置
 MUSIC_API_BASE=http://localhost:3000
