@@ -8,10 +8,22 @@ PORT = 5000
 # KOOK机器人配置
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token_here")
 
-# FFMPEG配置 - 使用相对路径
+# FFMPEG配置 - 优先使用有效的显式配置，项目搬迁后自动回退到随包二进制
 current_dir = os.path.dirname(os.path.abspath(__file__))
-FFMPEG_PATH = os.environ.get("FFMPEG_PATH", os.path.join(current_dir, "ffmpeg", "bin", "ffmpeg.exe"))
-FFPROBE_PATH = os.environ.get("FFPROBE_PATH", "").strip()
+
+
+def _resolve_bundled_tool(env_name, executable):
+    configured = os.environ.get(env_name, "").strip()
+    bundled = os.path.join(current_dir, "ffmpeg", "bin", executable)
+    if configured and os.path.isfile(configured):
+        return os.path.abspath(configured)
+    if os.path.isfile(bundled):
+        return os.path.abspath(bundled)
+    return configured or bundled
+
+
+FFMPEG_PATH = _resolve_bundled_tool("FFMPEG_PATH", "ffmpeg.exe")
+FFPROBE_PATH = _resolve_bundled_tool("FFPROBE_PATH", "ffprobe.exe")
 
 # 音乐API配置
 MUSIC_API_BASE = os.environ.get("MUSIC_API_BASE", "http://localhost:3000")

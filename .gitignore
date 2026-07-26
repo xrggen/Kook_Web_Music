@@ -42,6 +42,8 @@ ffmpeg.bac/
 
 # Runtime artifacts
 .heartbeat
+.bot_heartbeat
+.web_heartbeat
 
 # Claude Code
 .claude/

@@ -8,7 +8,13 @@ import atexit
 import time
 import threading
 import requests
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # 配置基础日志
 logging.basicConfig(
@@ -17,6 +23,22 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug.log")
+if not any(
+    isinstance(handler, logging.FileHandler)
+    and os.path.abspath(getattr(handler, "baseFilename", "")) == _log_path
+    for handler in logging.getLogger().handlers
+):
+    _file_handler = RotatingFileHandler(
+        _log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    )
+    logging.getLogger().addHandler(_file_handler)
 
 # 只关闭Flask的HTTP访问日志，保留其他日志
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -26,28 +48,65 @@ _music_api_process = None
 _qq_music_api_process = None
 
 
-def _kill_port(port: int):
-    """终止占用指定端口的进程（仅 Windows）"""
+def _process_belongs_to_dir(pid: int, expected_dir: str) -> bool:
+    """仅允许清理工作目录与目标 API 目录一致的进程。"""
+    if psutil is None:
+        logger.warning(
+            "[端口清理] 未安装 psutil，无法验证 PID=%s 的归属，跳过清理",
+            pid,
+        )
+        return False
+    try:
+        process_dir = os.path.normcase(os.path.realpath(psutil.Process(pid).cwd()))
+        expected = os.path.normcase(os.path.realpath(expected_dir))
+        return process_dir == expected
+    except (psutil.Error, OSError) as exc:
+        logger.warning("[端口清理] 无法验证 PID=%s 的归属: %s", pid, exc)
+        return False
+
+
+def _kill_port(port: int, expected_dir: str):
+    """终止指定 API 目录中占用端口的残留进程（仅 Windows）。"""
     try:
         out = subprocess.check_output(
-            f'netstat -ano | findstr :{port}', shell=True,
-            text=True, timeout=5,
+            ['netstat', '-ano'],
+            text=True,
+            timeout=5,
+            errors='replace',
         )
         pids = set()
-        for line in out.strip().split('\n'):
+        for line in out.splitlines():
             parts = line.strip().split()
-            if len(parts) >= 5 and parts[3].endswith(f':{port}'):
-                pid = parts[-1]
-                if pid != '0':
-                    pids.add(pid)
+            if len(parts) < 4 or parts[0].upper() not in ('TCP', 'UDP'):
+                continue
+            local_address = parts[1]
+            if local_address.rsplit(':', 1)[-1] != str(port):
+                continue
+            pid = parts[-1]
+            if pid.isdigit() and pid != '0':
+                pids.add(int(pid))
         for pid in pids:
-            subprocess.run(
-                ['taskkill', '/F', '/PID', pid],
+            if not _process_belongs_to_dir(pid, expected_dir):
+                logger.warning(
+                    "[端口清理] 端口 %d 被非本项目进程占用，拒绝终止 PID=%s",
+                    port,
+                    pid,
+                )
+                continue
+            result = subprocess.run(
+                ['taskkill', '/F', '/PID', str(pid)],
                 capture_output=True, timeout=5,
             )
-            logger.info("[端口清理] 已终止端口 %d 上的进程 PID=%s", port, pid)
-    except Exception:
-        pass
+            if result.returncode == 0:
+                logger.info("[端口清理] 已终止端口 %d 上的进程 PID=%s", port, pid)
+            else:
+                logger.warning(
+                    "[端口清理] 终止 PID=%s 失败（returncode=%s）",
+                    pid,
+                    result.returncode,
+                )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("[端口清理] 检查端口 %d 失败: %s", port, exc)
 
 
 def _api_dir():
@@ -75,8 +134,7 @@ def start_music_api():
 
     # 清理占用本服务端口的残留进程（Windows），避免误杀其他Node应用
     if sys.platform == "win32":
-        _kill_port(3000)
-        _kill_port(3200)
+        _kill_port(3000, api_dir)
 
     logger.info("正在启动本地音乐API服务: %s", api_dir)
     api_log = os.path.join(api_dir, "api_output.log")
@@ -184,6 +242,8 @@ def start_qq_music_api():
     if not os.path.isfile(os.path.join(api_dir, "package.json")):
         logger.warning("QQ音乐API缺少package.json，可能未安装依赖")
         return
+    if sys.platform == "win32":
+        _kill_port(3200, api_dir)
 
     logger.info("正在启动QQ音乐API服务: %s", api_dir)
     api_log = os.path.join(api_dir, "api_output.log")
@@ -299,16 +359,16 @@ def stop_qq_music_api():
     logger.info("QQ音乐API服务已停止")
 
 
-# 后台看门狗心跳文件（与 app.py 中 HEARTBEAT_FILE 一致）
-HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".heartbeat")
+# 看门狗只监控 Bot 事件循环；Web 请求使用独立心跳，不能掩盖 Bot 卡死。
+HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".bot_heartbeat")
 
 
 def _watchdog_thread():
     """
     后台看门狗：检测机器人事件循环是否卡死，并尝试自愈恢复。
-    心跳由 app.py 中的事件循环任务每30秒更新一次，
-    同时 Flask before_request 也会更新（处理HTTP请求时）。
+    心跳由 app.py 中的事件循环任务每30秒更新一次。
     """
+    watchdog_started_at = time.time()
     time.sleep(90)  # 启动后等待90秒（bot启动+心跳首写最多30s+余量）
     freeze_count = 0
     while True:
@@ -321,11 +381,11 @@ def _watchdog_thread():
                     last_beat = float(raw)
                     elapsed = time.time() - last_beat
                 else:
-                    elapsed = 0  # 文件存在但为空，仍在初始化
+                    elapsed = time.time() - os.path.getmtime(HEARTBEAT_FILE)
             else:
-                elapsed = 60  # 文件尚不存在，给启动更多容忍
+                elapsed = time.time() - watchdog_started_at
         except Exception:
-            elapsed = 60
+            elapsed = time.time() - watchdog_started_at
 
         if elapsed > 90:  # 超过90秒无心跳（正常每30s写入一次+60s容错）
             freeze_count += 1
@@ -333,22 +393,16 @@ def _watchdog_thread():
 
             if freeze_count >= 3:  # 连续3次 ≈ 135秒
                 logger.error("[看门狗] 事件循环可能卡死，尝试自愈...")
-                # 尝试通过HTTP唤醒Flask（如果Flask还活着说明只是bot线程卡了）
+                # HTTP 探针只用于记录故障范围；Bot 持续失联仍需重启整个进程。
                 port = int(os.getenv("PORT", 5000))
                 try:
                     r = requests.get(f"http://localhost:{port}/api/debug", timeout=5)
                     if r.status_code == 200:
-                        logger.info("[看门狗] Flask HTTP服务正常，bot事件循环疑似卡死")
-                        # bot线程卡死但Flask正常 → 标记需要重启
-                        logger.warning("[看门狗] 建议手动重启应用以恢复bot功能")
-                        freeze_count = 0  # 重置计数，不再重复告警
-                        continue
+                        logger.error("[看门狗] Flask 正常，但 Bot 事件循环已失联")
                 except Exception:
                     logger.error("[看门狗] Flask HTTP服务也无响应，进程整体异常")
 
-                # Flask和bot都无响应 → 进程整体卡死
-                logger.critical("[看门狗] 自愈失败，进程整体卡死，强制退出")
-                # 先尝试清理子进程再退出
+                logger.critical("[看门狗] 正在执行完整进程重启以恢复 Bot")
                 try:
                     stop_music_api()
                 except Exception:
@@ -357,7 +411,11 @@ def _watchdog_thread():
                     stop_qq_music_api()
                 except Exception:
                     pass
-                os._exit(1)
+                try:
+                    os.execv(sys.executable, [sys.executable, *sys.argv])
+                except Exception:
+                    logger.exception("[看门狗] 进程重启失败，强制退出交由外部守护器拉起")
+                    os._exit(1)
         else:
             freeze_count = 0
 
@@ -394,7 +452,7 @@ try:
     if __name__ == '__main__':
         host = os.getenv('HOST', '0.0.0.0')
         port = int(os.getenv('PORT', 5000))
-        debug = os.getenv('DEBUG', 'True').lower() in ('true', '1', 't')
+        debug = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't')
 
         logger.info(f"启动服务器: http://{host}:{port} [DEBUG: {debug}]")
         app.run(host=host, port=port, debug=debug, use_reloader=False)

@@ -3,10 +3,12 @@ import os
 import json
 import asyncio
 import sys
+import time
 from typing import Dict, Any, List, Union, Optional
 import threading
 import requests
 import logging
+from logging.handlers import RotatingFileHandler
 import shlex
 import subprocess
 from khl import Bot, Message
@@ -46,24 +48,43 @@ DefaultLexer.lex = _patched_lex
 # 修复相对导入
 try:
     from . import kookvoice
+    from .kookvoice.requestor import VoiceRequestor
     from .config import *
-    from .utils import search_music, get_music_url, get_playlist, get_playlist_urls
+    from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
+    from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
+    from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
 except ImportError:
     import kookvoice
+    from kookvoice.requestor import VoiceRequestor
     from config import *
-    from utils import search_music, get_music_url, get_playlist, get_playlist_urls
-    from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue
-    from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid
+    from utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
+    from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
+    from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,  # 保持INFO级别，显示正常信息
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-    handlers=[
-        logging.FileHandler('debug.log'),
-        logging.StreamHandler()
-    ]
+# 配置日志。run.py 可能已经初始化根日志器，因此不能再次依赖 basicConfig。
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+_formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
+if not any(
+    isinstance(handler, logging.FileHandler)
+    and os.path.abspath(getattr(handler, 'baseFilename', '')) == _log_path
+    for handler in _root_logger.handlers
+):
+    _file_handler = RotatingFileHandler(
+        _log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding='utf-8',
+    )
+    _file_handler.setFormatter(_formatter)
+    _root_logger.addHandler(_file_handler)
+if not any(type(handler) is logging.StreamHandler for handler in _root_logger.handlers):
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(_formatter)
+    _root_logger.addHandler(_stream_handler)
 logger = logging.getLogger(__name__)
 
 # 只关闭Flask的HTTP访问日志，保留其他日志
@@ -73,18 +94,23 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
 
-# 后台看门狗心跳文件路径
-HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".heartbeat")
+# Bot 与 Web 使用独立心跳，避免活跃的 Flask 请求掩盖 Bot 事件循环卡死。
+BOT_HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".bot_heartbeat")
+WEB_HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".web_heartbeat")
+
+
+def _write_heartbeat(path):
+    with open(path, "w", encoding="ascii") as heartbeat:
+        heartbeat.write(str(time.time()))
 
 
 @app.before_request
 def _update_heartbeat():
-    """每个请求更新心跳时间戳，供看门狗检测进程是否卡死"""
+    """记录 Web 服务心跳；Bot 看门狗使用独立文件。"""
     try:
-        with open(HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
+        _write_heartbeat(WEB_HEARTBEAT_FILE)
     except Exception:
-        pass
+        logger.exception("更新Web心跳失败")
 
 
 # 尝试导入SocketIO，如果不可用则提供备用方案
@@ -180,10 +206,6 @@ except Exception as e:
     logger.error(f"FFMPEG配置错误: {str(e)}")
     sys.exit(1)
 
-# 全局变量
-guild_data = {}  # 存储服务器信息
-current_guild_id = None  # 当前选中的服务器ID
-
 # 获取用户所在的语音频道
 async def find_user_voice_channel(gid: str, aid: str) -> Union[str, None]:
     """查找用户所在的语音频道"""
@@ -227,10 +249,11 @@ async def get_channel_list(guild_id):
 # 根据用户所在频道或服务器内唯一活跃频道，定位控制目标
 async def _resolve_channel(guild_id: str, user_id: str):
     """返回目标语音频道ID。先查用户所在频道，再回退到服务器内唯一活跃频道。"""
+    playlists = kookvoice.get_state_snapshot()['play_list']
     user_ch = await find_user_voice_channel(guild_id, user_id)
-    if user_ch and user_ch in kookvoice.play_list:
+    if user_ch and user_ch in playlists:
         return user_ch
-    active = [ch_id for ch_id, data in kookvoice.play_list.items()
+    active = [ch_id for ch_id, data in playlists.items()
               if data.get('guild_id') == guild_id]
     if len(active) == 1:
         return active[0]
@@ -344,7 +367,7 @@ async def play_music(msg: Message, music_input: str = ''):
         # 添加音乐到播放队列
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
         extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
-        player.add_music(music_url, extra_data)
+        player.add_music(music_url, extra_data, msg.ctx.guild.id)
         logger.info(f"[命令:wy] 已加入队列: {song_name}")
 
         await msg.reply(f"✅ {song_name} 已加入播放队列")
@@ -394,7 +417,7 @@ async def qq_cmd(msg: Message, music_input: str = ''):
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
         extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
-        player.add_music(music_url, extra_data)
+        player.add_music(music_url, extra_data, msg.ctx.guild.id)
         logger.info(f"[命令:qq] 已加入队列: {song_name}")
 
         await msg.reply(f"✅ {song_name} 已加入播放队列 (QQ音乐)")
@@ -496,13 +519,11 @@ async def shuffle_cmd(msg: Message):
         enabled, count = player.shuffle_toggle()
         # 重新预取前 5 首 URL
         try:
-            from utils import refill_playlist_queue
-            refill_playlist_queue(ch, kookvoice.play_list)
+            refill_playlist_queue(ch, kookvoice.play_list, lock=kookvoice.state_lock)
         except Exception:
             pass
         try:
-            from qq_utils import refill_qq_playlist_queue
-            refill_qq_playlist_queue(ch, kookvoice.play_list)
+            refill_qq_playlist_queue(ch, kookvoice.play_list, lock=kookvoice.state_lock)
         except Exception:
             pass
         if enabled:
@@ -516,59 +537,41 @@ async def shuffle_cmd(msg: Message):
 @bot.command(name='脱离卡死')
 async def reset_all_cmd(msg: Message):
     """重置所有播放状态与服务器监听"""
-    global guild_data, current_guild_id
-
     logger.info(f"[命令:脱离卡死] 用户={msg.author_id}")
 
-    # 收集所有需要清理的频道ID
-    all_channels = set()
-    for d in (kookvoice.play_list, kookvoice.guild_status, kookvoice.playlist_handle_status):
-        try:
-            all_channels.update(d.keys())
-        except Exception:
-            pass
+    # 原子发送 STOP；实际删除由各 Handler 完成，避免旧线程误删新会话。
+    all_channels = kookvoice.reset_playback_state()
     stopped = len(all_channels)
 
     # 第一步：通过 KOOK API 强制离开所有语音频道，从根源切断 RTP 连接
     # 即使 PlayHandler 线程卡死在 I/O 上，RTP 断开后 FFmpeg 也会因 broken pipe 退出
-    from kookvoice.requestor import VoiceRequestor
     for ch_id in all_channels:
+        vr = VoiceRequestor(BOT_TOKEN)
         try:
-            vr = VoiceRequestor(BOT_TOKEN)
-            await vr.leave(ch_id)
+            await asyncio.wait_for(vr.leave(ch_id), timeout=5)
             logger.info(f"[脱离卡死] 已离开语音频道: {ch_id}")
         except Exception as e:
             logger.warning(f"[脱离卡死] 离开频道 {ch_id} 失败（可忽略）: {e}")
+        finally:
+            await vr.close()
 
-    # 第二步：发送 STOP 信号 + 清空队列
-    for ch_id in all_channels:
-        try:
-            kookvoice.guild_status[ch_id] = kookvoice.Status.STOP
-        except Exception:
-            pass
-    for ch_id in list(kookvoice.play_list.keys()):
-        try:
-            kookvoice.play_list[ch_id]['play_list'] = []
-        except Exception:
-            pass
-
-    # 第三步：等待 Handler 感知 RTP 断开或 STOP 信号
-    await asyncio.sleep(0.5)
-
-    # 第四步：清空所有全局状态
-    for d in (kookvoice.play_list, kookvoice.guild_status, kookvoice.playlist_handle_status):
-        try:
-            d.clear()
-        except Exception:
-            pass
-    try:
-        guild_data.clear()
-    except Exception:
-        pass
-    current_guild_id = None
-
-    logger.info(f"[命令:脱离卡死] 已重置 {stopped} 个频道")
-    await msg.reply(f"✅ 已重置所有状态（共 {stopped} 个频道）")
+    remaining = await asyncio.to_thread(
+        kookvoice.wait_for_handlers,
+        all_channels,
+        5.0,
+    )
+    logger.info(
+        "[命令:脱离卡死] 已重置 %d 个频道，仍在退出=%d",
+        stopped,
+        len(remaining),
+    )
+    if remaining:
+        await msg.reply(
+            f"⚠️ 已强制脱离 {stopped} 个频道；"
+            f"仍有 {len(remaining)} 个处理器正在退出，请稍后再试"
+        )
+    else:
+        await msg.reply(f"✅ 已重置所有状态（共 {stopped} 个频道）")
 
 @bot.command(name='wygd')
 async def playlist_play(msg: Message, playlist_input: str = ''):
@@ -634,11 +637,12 @@ async def playlist_play(msg: Message, playlist_input: str = ''):
                 "文字频道": msg.ctx.channel.id,
                 "歌单来源": playlist_name,
             }
-            player.add_music(song['marker'], extra_data)
+            player.add_music(song['marker'], extra_data, msg.ctx.guild.id)
 
         # 预取前5首URL，其余播放时自动补充
-        from utils import refill_playlist_queue
-        prefetched = refill_playlist_queue(voice_channel_id, kookvoice.play_list)
+        prefetched = refill_playlist_queue(
+            voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+        )
         logger.info(f"[命令:wygd] 完成 导入{len(songs)}首 预取{prefetched}首")
         await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲")
 
@@ -706,9 +710,11 @@ async def qq_playlist_play(msg: Message, playlist_input: str = ''):
                 "文字频道": msg.ctx.channel.id,
                 "歌单来源": playlist_name,
             }
-            player.add_music(song['marker'], extra_data)
+            player.add_music(song['marker'], extra_data, msg.ctx.guild.id)
 
-        prefetched = refill_qq_playlist_queue(voice_channel_id, kookvoice.play_list)
+        prefetched = refill_qq_playlist_queue(
+            voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+        )
         logger.info(f"[命令:qqgd] 完成 导入{len(songs)}首 预取{prefetched}首")
         await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲 (QQ音乐)")
 
@@ -754,7 +760,6 @@ async def qq_playlists_cmd(msg: Message):
     """列出当前登录QQ音乐账号的歌单"""
     try:
         logger.info(f"[命令:qq我的歌单] 用户={msg.author_id}")
-        from qq_utils import verify_qq_cookie, get_qq_user_playlists
         vr = verify_qq_cookie()
         if not vr["valid"]:
             await msg.reply(f"❌ {vr['message']}\n请在Web控制台 /account 页面登录QQ音乐")
@@ -837,7 +842,6 @@ async def qq_account_info_cmd(msg: Message):
     """查询当前登录的QQ音乐账号信息，含Cookie存活验证"""
     try:
         logger.info(f"[命令:qq当前账号] 用户={msg.author_id}")
-        from qq_utils import verify_qq_cookie
         result = verify_qq_cookie()
         raw_uin = result["uin"] or ""
 
@@ -864,7 +868,6 @@ async def qq_account_info_cmd(msg: Message):
             return
 
         logger.info(f"[命令:qq当前账号] UIN={raw_uin} 验证通过")
-        from qq_utils import _format_expiry
         exp_str = _format_expiry(result.get("expires_in", -1)) if result.get("expires_in", -1) > 0 else "未知"
         info = (
             f"🎵 当前QQ音乐账号:\n"
@@ -941,7 +944,7 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
             "platform": "bili",
             "duration": play_info.get("duration", 0),  # 方案A：API已知时长
         }
-        player.add_music(music_url, extra_data)
+        player.add_music(music_url, extra_data, msg.ctx.guild.id)
         logger.info(f"[命令:bili] 已加入队列: {song_name} (时长={play_info.get('duration', 0)}s)")
 
         _page_hint = ""
@@ -982,10 +985,9 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
             return
 
         # 获取收藏夹名称
-        from bili_utils import get_bili_favorite_collections as _get_cols
         fav_name = f"收藏夹{media_id}"
         try:
-            cols = _get_cols()
+            cols = get_bili_favorite_collections()
             for c in cols:
                 if str(c["id"]) == media_id:
                     fav_name = c["title"]
@@ -1011,9 +1013,11 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
                 "歌单来源": fav_name,
                 "platform": "bili",
             }
-            player.add_music(song['marker'], extra_data)
+            player.add_music(song['marker'], extra_data, msg.ctx.guild.id)
 
-        prefetched = refill_bili_playlist_queue(voice_channel_id, kookvoice.play_list)
+        prefetched = refill_bili_playlist_queue(
+            voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+        )
         logger.info(f"[命令:bili歌单] 完成 导入{len(songs)}首 预取{prefetched}首")
         await msg.reply(f"✅ 已导入B站收藏夹「{fav_name}」共 {len(songs)} 首歌曲")
 
@@ -1026,7 +1030,6 @@ async def bili_playlists_cmd(msg: Message):
     """列出当前登录B站账号的收藏夹"""
     try:
         logger.info(f"[命令:bili我的歌单] 用户={msg.author_id}")
-        from bili_utils import verify_bili_cookie
         vr = verify_bili_cookie()
         if not vr["valid"]:
             await msg.reply(f"❌ {vr['message']}\n请在Web控制台 /account 页面登录B站")
@@ -1048,7 +1051,6 @@ async def bili_account_cmd(msg: Message):
     """查询当前登录的B站账号信息"""
     try:
         logger.info(f"[命令:bili当前账号] 用户={msg.author_id}")
-        from bili_utils import verify_bili_cookie, get_bili_user_info
         vr = verify_bili_cookie()
         if not vr["valid"]:
             await msg.reply(f"❌ {vr['message']}")
@@ -1090,7 +1092,10 @@ async def playlist_cmd(msg: Message, page_input: str = ''):
             await msg.reply("📋 当前没有播放列表")
             return
 
-        guild_pl = kookvoice.play_list[ch]
+        guild_pl = kookvoice.get_state_snapshot(ch)
+        if guild_pl is None:
+            await msg.reply("📋 当前没有播放列表")
+            return
         now_playing = guild_pl.get("now_playing")
         queue = guild_pl.get("play_list", [])
         total = len(queue)
@@ -1146,14 +1151,17 @@ async def clear_playlist_cmd(msg: Message):
         if not ch:
             await msg.reply("📋 当前没有播放列表")
             return
-        queue_len = len(kookvoice.play_list[ch].get('play_list', []))
+        with kookvoice.state_lock:
+            state = kookvoice.play_list.get(ch)
+            queue_len = len(state.get('play_list', [])) if state else 0
+            if queue_len:
+                state['play_list'] = []
         logger.info(f"[命令:清空列表] 当前队列={queue_len}首")
 
         if queue_len == 0:
             await msg.reply("📋 播放列表本来就是空的")
             return
 
-        kookvoice.play_list[ch]['play_list'] = []
         await msg.reply(f"✅ 已清空播放列表（共移除 {queue_len} 首歌曲）")
     except Exception as e:
         logger.error(f"[命令:清空列表] 出错: {e}")
@@ -1180,8 +1188,9 @@ async def play_index_cmd(msg: Message, index_input: str = ''):
             await msg.reply("📋 当前没有播放列表")
             return
 
-        queue = kookvoice.play_list[ch].get('play_list', [])
-        now_playing = kookvoice.play_list[ch].get('now_playing')
+        state = kookvoice.get_state_snapshot(ch)
+        queue = state.get('play_list', []) if state else []
+        now_playing = state.get('now_playing') if state else None
         logger.info(f"[命令:播放第] 队列={len(queue)}首 目标={target}")
 
         if target < 1 or target > len(queue):
@@ -1193,8 +1202,14 @@ async def play_index_cmd(msg: Message, index_input: str = ''):
         song_name = extra.get('音乐名字') or extra.get('title', '未知歌曲')
 
         if target > 1:
-            kookvoice.play_list[ch]['play_list'] = queue[target - 1:]
-            logger.info(f"[命令:播放第] 移除前 {target - 1} 首，剩余 {len(kookvoice.play_list[ch]['play_list'])} 首")
+            with kookvoice.state_lock:
+                live_state = kookvoice.play_list.get(ch)
+                if live_state is None:
+                    raise ValueError("播放会话已结束")
+                live_queue = live_state.get('play_list', [])
+                live_state['play_list'] = live_queue[target - 1:]
+                remaining_count = len(live_state['play_list'])
+            logger.info(f"[命令:播放第] 移除前 {target - 1} 首，剩余 {remaining_count} 首")
 
         player = kookvoice.Player(ch)
         player.skip()
@@ -1327,10 +1342,9 @@ def start_bot_loop():
         async def _heartbeat_task():
             while True:
                 try:
-                    with open(HEARTBEAT_FILE, "w") as f:
-                        f.write(str(time.time()))
+                    _write_heartbeat(BOT_HEARTBEAT_FILE)
                 except Exception:
-                    pass
+                    logger.exception("更新Bot心跳失败")
                 await asyncio.sleep(30)
         loop.create_task(_heartbeat_task())
         logger.info("[机器人] 心跳任务已就绪")
@@ -1367,30 +1381,53 @@ except ImportError:
     from routes import register_routes
     from account_api import register_account_routes
 
-# 启动机器人线程
-bot_thread = threading.Thread(target=start_bot_loop)
-bot_thread.daemon = True
-bot_thread.start()
+_bot_thread = None
+_bot_thread_lock = threading.Lock()
+
+
+def _start_bot_thread_once():
+    """仅在应用首次创建时启动一个 Bot 事件循环线程。"""
+    global _bot_thread
+    with _bot_thread_lock:
+        if _bot_thread is not None and _bot_thread.is_alive():
+            return _bot_thread
+        _bot_thread = threading.Thread(
+            target=start_bot_loop,
+            name='kook-bot',
+            daemon=True,
+        )
+        _bot_thread.start()
+        return _bot_thread
 
 def create_app():
-    # 注册路由
-    register_routes(app, bot, socketio if socketio_available else None)
-    register_account_routes(app)
+    if not app.config.get('_ROUTES_REGISTERED'):
+        # 注册路由
+        register_routes(app, bot, socketio if socketio_available else None)
+        register_account_routes(app)
 
-    # 注册QQ音乐账号路由
-    try:
-        from .qq_account_api import register_qq_account_routes
-    except ImportError:
-        from qq_account_api import register_qq_account_routes
-    register_qq_account_routes(app)
+        # 注册QQ音乐账号路由
+        try:
+            from .qq_account_api import register_qq_account_routes
+        except ImportError:
+            from qq_account_api import register_qq_account_routes
+        register_qq_account_routes(app)
 
-    # 注册B站账号路由
-    try:
-        from .bili_account_api import register_bili_account_routes
-    except ImportError:
-        from bili_account_api import register_bili_account_routes
-    register_bili_account_routes(app)
+        # 注册B站账号路由
+        try:
+            from .bili_account_api import register_bili_account_routes
+        except ImportError:
+            from bili_account_api import register_bili_account_routes
+        register_bili_account_routes(app)
 
+        try:
+            from .api import api_bp
+        except ImportError:
+            from api import api_bp
+        app.register_blueprint(api_bp, url_prefix='/api')
+        app.config['_ROUTES_REGISTERED'] = True
+
+    app.extensions['kook_bot'] = bot
+    _start_bot_thread_once()
     return app
 
 # 测试路由
@@ -1401,16 +1438,15 @@ def debug():
         bot_status = "运行中" if bot.is_running else "未运行"
         
         # 添加播放列表信息
-        import kookvoice
-        active_guilds = len(kookvoice.play_list) if hasattr(kookvoice, 'play_list') else 0
+        snapshot = kookvoice.get_state_snapshot()
+        playlists = snapshot['play_list']
+        active_guilds = len(playlists)
         playing_songs = 0
         queued_songs = 0
-        
-        if hasattr(kookvoice, 'play_list'):
-            for guild_data in kookvoice.play_list.values():
-                if guild_data.get('now_playing'):
-                    playing_songs += 1
-                queued_songs += len(guild_data.get('play_list', []))
+        for guild_data in playlists.values():
+            if guild_data.get('now_playing'):
+                playing_songs += 1
+            queued_songs += len(guild_data.get('play_list', []))
         
         return jsonify({
             "status": "success",
@@ -1425,7 +1461,8 @@ def debug():
         return jsonify({"status": "error", "error": str(e)})
 
 if __name__ == '__main__':
+    application = create_app()
     if socketio_available and socketio:
-        socketio.run(app, host=HOST, port=PORT, debug=DEBUG, log_output=False)
+        socketio.run(application, host=HOST, port=PORT, debug=DEBUG, log_output=False)
     else:
-        app.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)
+        application.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)

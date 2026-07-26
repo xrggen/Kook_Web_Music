@@ -48,7 +48,10 @@ def _get_session():
 _BV_PATTERN = re.compile(r'BV[0-9A-Za-z]{10}')
 
 # Cookie 存储路径（由 config.py 注入）
-from config import BILI_COOKIE_TXT_PATH as _bili_config_path
+try:
+    from .config import BILI_COOKIE_TXT_PATH as _bili_config_path
+except ImportError:
+    from config import BILI_COOKIE_TXT_PATH as _bili_config_path
 BILI_COOKIE_TXT_PATH = _bili_config_path
 
 
@@ -606,24 +609,44 @@ def resolve_bili_marker_batch(markers, count=5):
     return resolved
 
 
-def refill_bili_playlist_queue(channel_id, play_list_dict, count=5):
+def refill_bili_playlist_queue(channel_id, play_list_dict, count=5, lock=None):
     """检查播放队列并将前 count 个 BILI_PLAYLIST_SONG 标记替换为真实URL"""
-    if channel_id not in play_list_dict:
-        return 0
-    queue = play_list_dict[channel_id].get("play_list", [])
-    markers = [item["file"] for item in queue if item.get("file", "").startswith("BILI_PLAYLIST_SONG:")]
+    def collect_markers():
+        state = play_list_dict.get(channel_id)
+        queue = state.get("play_list", []) if state else []
+        return [
+            item["file"]
+            for item in queue
+            if item.get("file", "").startswith("BILI_PLAYLIST_SONG:")
+        ]
+
+    if lock is not None:
+        with lock:
+            markers = collect_markers()
+    else:
+        markers = collect_markers()
     if not markers:
         return 0
 
     resolved = resolve_bili_marker_batch(markers, count)
-    replaced = 0
-    for item in queue:
-        marker = item.get("file", "")
-        if marker in resolved:
-            item["file"] = resolved[marker]
-            replaced += 1
-            if replaced >= count:
-                break
+    def apply_resolved():
+        state = play_list_dict.get(channel_id)
+        queue = state.get("play_list", []) if state else []
+        replaced = 0
+        for item in queue:
+            marker = item.get("file", "")
+            if marker in resolved:
+                item["file"] = resolved[marker]
+                replaced += 1
+                if replaced >= count:
+                    break
+        return replaced
+
+    if lock is not None:
+        with lock:
+            replaced = apply_resolved()
+    else:
+        replaced = apply_resolved()
     if replaced:
         logger.info(f"[Bili批量取链] 已替换 {replaced} 个标记为真实URL")
     return replaced

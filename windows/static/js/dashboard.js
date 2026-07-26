@@ -173,6 +173,12 @@ function displayGuilds(guilds) {
 
 // 选择服务器
 function selectGuild(guildId, guildName) {
+    const guildChanged = currentGuildId !== guildId;
+    if (guildChanged) {
+        currentChannelId = null;
+        try { localStorage.removeItem('currentChannelId'); } catch (e) {}
+    }
+
     // 更新全局变量
     currentGuildId = guildId;
     currentGuildName = guildName;
@@ -229,6 +235,7 @@ function enrichChannelStatus(guildId, channels) {
     fetch(`/api/channels/active?guild_id=${guildId}`)
         .then(r => r.json())
         .then(statusData => {
+            if (guildId !== currentGuildId) return;
             const actives = statusData.active || {};
             channels.forEach(ch => {
                 ch.active = !!actives[ch.id];
@@ -237,7 +244,7 @@ function enrichChannelStatus(guildId, channels) {
             displayChannels(channels);
         })
         .catch(() => {
-            displayChannels(channels);
+            if (guildId === currentGuildId) displayChannels(channels);
         });
 }
 
@@ -265,7 +272,7 @@ function displayChannels(channels) {
 
     document.getElementById('join-btn').disabled = true;
 
-    channelSelect.addEventListener('change', function() {
+    channelSelect.onchange = function() {
         currentChannelId = this.value;
         document.getElementById('join-btn').disabled = !currentChannelId;
         try {
@@ -275,14 +282,20 @@ function displayChannels(channels) {
                 localStorage.removeItem('currentChannelId');
             }
         } catch (e) {}
-    });
+        loadPlaylist(currentChannelId);
+    };
 
     try {
         const savedChannelId = localStorage.getItem('currentChannelId');
-        if (savedChannelId) {
+        const savedChannelExists = Array.from(channelSelect.options)
+            .some(option => option.value === savedChannelId);
+        if (savedChannelId && savedChannelExists) {
             channelSelect.value = savedChannelId;
             currentChannelId = savedChannelId;
             document.getElementById('join-btn').disabled = !currentChannelId;
+        } else {
+            currentChannelId = null;
+            localStorage.removeItem('currentChannelId');
         }
     } catch (e) {}
 }
@@ -400,7 +413,7 @@ function bindEvents() {
     if (refreshBtn) {
         refreshBtn.addEventListener('click', function() {
             if (currentGuildId) {
-                loadPlaylist(currentGuildId);
+                loadPlaylist(currentChannelId);
             }
         });
     }
@@ -578,11 +591,12 @@ function leaveChannel(guildId) {
 
 // 搜索音乐
 function searchMusic(keyword) {
-    fetch(`/api/search?keyword=${encodeURIComponent(keyword)}&platform=${currentPlatform}`)
+    const searchPlatform = currentPlatform;
+    fetch(`/api/search?keyword=${encodeURIComponent(keyword)}&platform=${searchPlatform}`)
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                displaySearchResults(data.songs);
+                displaySearchResults(data.songs, searchPlatform);
             } else {
                 showError('搜索音乐失败: ' + data.error);
             }
@@ -593,7 +607,7 @@ function searchMusic(keyword) {
 }
 
 // 显示搜索结果
-function displaySearchResults(songs) {
+function displaySearchResults(songs, platform) {
     const resultsBody = document.getElementById('search-results-body');
     resultsBody.innerHTML = '';
     
@@ -610,7 +624,7 @@ function displaySearchResults(songs) {
             <td>${song.ar ? song.ar.map(a => a.name).join(', ') : '-'}</td>
             <td>${song.al ? song.al.name : '-'}</td>
             <td>
-                <button class="btn btn-sm btn-outline-primary play-btn" data-id="${song.id}" data-name="${song.name}" data-artist="${song.ar ? song.ar[0].name : '-'}">
+                <button class="btn btn-sm btn-outline-primary play-btn" data-id="${song.id}" data-name="${song.name}" data-artist="${song.ar ? song.ar[0].name : '-'}" data-platform="${platform}">
                     <i class="bi bi-play-fill"></i> 播放
                 </button>
             </td>
@@ -633,7 +647,8 @@ function displaySearchResults(songs) {
                     currentGuildId,
                     this.dataset.id,
                     this.dataset.name,
-                    this.dataset.artist
+                    this.dataset.artist,
+                    this.dataset.platform
                 );
             } else {
                 showError('请先选择一个服务器');
@@ -645,7 +660,7 @@ function displaySearchResults(songs) {
 }
 
 // 播放音乐
-function playMusic(guildId, songId, songName, artistName) {
+function playMusic(guildId, songId, songName, artistName, platform = currentPlatform) {
     console.log('playMusic被调用:', {guildId, songId, songName, artistName, currentChannelId});
     
     if (!currentChannelId) {
@@ -659,7 +674,7 @@ function playMusic(guildId, songId, songName, artistName) {
         song_id: songId,
         song_name: songName,
         artist_name: artistName,
-        platform: currentPlatform
+        platform: platform
     };
     
     console.log('发送播放请求:', requestData);
@@ -680,7 +695,7 @@ function playMusic(guildId, songId, songName, artistName) {
         if (data.success) {
             showSuccess(`已添加到播放列表: ${songName}`);
             // 刷新播放列表
-            loadPlaylist(guildId);
+            loadPlaylist(currentChannelId);
         } else {
             showError('播放音乐失败: ' + data.error);
         }
@@ -739,7 +754,7 @@ function importPlaylist(guildId, playlistInput) {
         if (data.success) {
             showSuccess(`已导入歌单，共${data.count}首歌曲`);
             // 刷新播放列表
-            loadPlaylist(guildId);
+            loadPlaylist(currentChannelId);
         } else {
             showError('导入歌单失败: ' + data.error);
         }

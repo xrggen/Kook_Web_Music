@@ -16,3 +16,5 @@ idna==3.2
 certifi==2021.5.30
 qrcode>=8.0
 Pillow>=11.0
+aiohttp
+psutil

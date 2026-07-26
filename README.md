@@ -1,11 +1,12 @@
 # KOOK音乐机器人 Web控制台
 
-> **当前版本**: V2.7.3 | **发布日期**: 2026-06-17
+> **当前版本**: V2.7.4 | **发布日期**: 2026-07-26
 
 ### 版本历史
 
 | 版本 | 日期 | 类型 | 说明 |
 |------|------|------|------|
+| **V2.7.4** | 2026-07-26 | 架构修复 | Windows 主线稳定性重构：同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁并提供只读快照；FFmpeg/ffprobe 子进程改为参数化启动、超时与幂等回收；Bot/Web 心跳拆分并支持完整进程自愈；端口清理增加进程归属校验；应用工厂、日志轮转、前端频道状态及 QQ 歌单分页同步修复；新增 9 项稳定性测试 |
 | **V2.7.3** | 2026-06-17 | 修复 | `/qqgd` 修复他人歌单导入失败：改用 `u6.y.qq.com` 签名 API（移植 GoMusic 方案），无需 cookie 支持任意公开歌单，支持分页（>30首）；修复 KOOK Markdown 链接 `[url](url)` 导致歌单 ID 提取错误（`/wygd` `/qqgd` `/bili歌单`）；修复 `/停止` 后残留 STOP 状态阻止下次自动播放 |
 | **V2.7.2** | 2026-06-09 | 修复 | B站音频解码完整修复：`create_subprocess_exec` 替代 shell 避免 URL 中 `%` 被 cmd.exe 破坏；BV 号直解析跳过搜索；Session 预热绕过 -412 风控；解码失败快速跳过；UID 脱敏 |
 | **V2.7.1** | 2026-06-09 | 修复 | B站二维码登录修复：QR API 域名修正为 `passport.bilibili.com`；服务端本地生成 QR 图片替代第三方 API；`/帮助` 指令新增 B站 四个指令 |
@@ -27,6 +28,15 @@
 | **V1.4** | 2026-05-18 | 修复 | 修复 `shlex` 命令词法解析器未闭合引号导致全部命令崩溃；适配中文引号（`""''「」『』`→英文引号）；`/播放列表` 新增分页支持：`/播放列表 [页数]`（20首/页） |
 | **V1.3** | 2026-05-16 | 功能增强 | 修复 Node API 端口抢占、启动卡死、asyncio 管道泄漏等问题；新增看门狗自愈机制；新增 `/清空列表` 命令；新增切歌主动通知；重写 `/wygd` 对齐 Web 控制台分页逻辑、支持歌单链接格式、解除50首限制；歌单导入改为批量预取URL（每批5首）；新增 `/播放第N首` 命令 |
 | **V1.2** | 2026-05-15 | 初始版本 | 集成本地网易云音乐 API (NeteaseCloudMusicApi)；新增网易云账号管理页面 (`/account`)；新增 `/当前账号`、`/播放列表`、`/帮助` 机器人命令；完善全链路终端日志输出 |
+
+### V2.7.4 稳定性设计
+
+- **单频道单处理器**：`Player.join()` 与 `add_music()` 共用受锁保护的处理器注册表，停止期间的新请求会等待旧处理器完成清理，避免重复 RTP 会话和旧线程误删新队列。
+- **安全连接与资源回收**：加入频道不再预先无条件离开；只有首次加入失败时才清理残留会话并重试。KOOK 请求复用带超时的 `aiohttp.ClientSession`，FFmpeg/ffprobe 在正常结束、异常和取消路径都会回收。
+- **并发状态边界**：播放线程、Bot 命令和 Web API 通过同一可重入锁修改状态，对外查询使用深拷贝快照；歌单预取采用“锁内取标记、锁外联网、锁内回填”。
+- **Windows 自愈与进程治理**：Bot 使用 `.bot_heartbeat`，Web 使用 `.web_heartbeat`；看门狗只以 Bot 心跳判断事件循环是否失联，连续异常后重启完整进程。3000/3200 端口仅清理工作目录属于本项目 API 的进程。
+- **可迁移部署**：无效的旧 FFmpeg/ffprobe 绝对路径会回退到随包二进制；运行日志统一写入可轮转的 `windows/debug.log`。
+- **验证**：新增 `windows/tests/test_stability.py`，覆盖并发加入、并发加歌、停止竞态、残留状态、状态快照和 QQ 分页终止条件；同时验证应用工厂幂等、关键路由和前端 JavaScript 语法。
 
 ---
 
@@ -69,9 +79,10 @@ Kook_Web_Music/
 │   ├── cookie_login_captcha.py        # 网易云手机验证码登录脚本
 │   ├── save_cookie.py                 # 手动保存Cookie脚本
 │   ├── create_env.py                  # .env文件创建脚本
+│   ├── tests/test_stability.py         # 播放并发、停止竞态与QQ分页稳定性测试
 │   ├── NeteaseCloudMusicApi/          # 本地网易云API（Node.js Express, 端口3000）
 │   ├── qq-music-api/                  # 本地QQ音乐API（Koa2 TypeScript, 端口3200）
-│   └── ffmpeg/                        # FFmpeg工具（bin/ffmpeg.exe）
+│   └── ffmpeg/                        # FFmpeg工具（bin/ffmpeg.exe + ffprobe.exe）
 ├── Ubuntu/                           # Ubuntu平台版本（功能与Windows对等）
 │   ├── run.py                        # 应用入口（同Windows结构）
 │   ├── app.py                        # Flask应用核心 + 全部KOOK机器人命令
@@ -345,9 +356,9 @@ python save_cookie.py "你的Cookie字符串"
 - QQ音乐Cookie含多字段过期检测（2分钟缓存）；B站通过 `/x/web-interface/nav` 验证
 
 ### 看门狗自愈
-- 心跳文件 `.heartbeat` 每30秒由bot事件循环写入
-- 后台看门狗线程监测心跳，连续3次缺失（~135秒）触发告警
-- Flask和bot双通道检测，区分bot线程卡死与进程整体异常
+- Bot 事件循环每30秒更新 `.bot_heartbeat`，Flask 请求独立更新 `.web_heartbeat`
+- 后台看门狗仅监测 Bot 心跳，避免活跃的 Web 请求掩盖 Bot 卡死
+- 心跳连续3次超时后清理本地音乐 API 子进程，并以相同启动参数重启完整 Python 进程
 
 ## Windows版与Ubuntu版差异
 

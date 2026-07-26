@@ -1,6 +1,8 @@
 import asyncio
+import copy
 import os
 import shlex
+import shutil
 import threading
 import time
 import logging
@@ -18,11 +20,8 @@ log_enabled = False
 
 def configure_logging(enabled: bool = True):
     global log_enabled
-    log_enabled = enabled
-    if enabled:
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    else:
-        logging.disable(logging.CRITICAL)
+    # 播放库只控制自身的详细日志，不修改应用的根日志配置。
+    log_enabled = bool(enabled)
 
 ffmpeg_bin = os.environ.get('FFMPEG_BIN', 'ffmpeg')
 
@@ -30,7 +29,11 @@ original_loop = None  # 初始化为None，后面会赋值为AbstractEventLoop
 
 def set_ffmpeg(path):
     global ffmpeg_bin
-    ffmpeg_bin = path
+    path = str(path or '').strip()
+    resolved = path if path and os.path.isfile(path) else shutil.which(path)
+    if not resolved:
+        raise FileNotFoundError(f'FFmpeg不存在或不可执行: {path or "<空>"}')
+    ffmpeg_bin = os.path.abspath(resolved) if os.path.isfile(resolved) else resolved
 
 
 def set_loop(loop):
@@ -87,6 +90,119 @@ play_list_example = {'频道id':
                                    {'file': '路径', 'ss': 0}]}}
 
 playlist_handle_status = {}
+state_lock = threading.RLock()
+_active_handlers: Dict[str, "PlayHandler"] = {}
+
+
+def _new_channel_state(channel_id: str, token: str, guild_id: str = "") -> Dict[str, Any]:
+    return {
+        'token': token,
+        'guild_id': str(guild_id),
+        'voice_channel': channel_id,
+        'repeat': False,
+        '_queue_backup': None,
+        '_stopping': False,
+        'now_playing': None,
+        'play_list': [],
+    }
+
+
+def _get_active_handler_locked(channel_id: str):
+    handler = _active_handlers.get(channel_id)
+    if handler is not None and not handler.finished.is_set():
+        return handler
+    if handler is not None:
+        _active_handlers.pop(channel_id, None)
+    return None
+
+
+def _start_handler_locked(channel_id: str, token: str):
+    handler = _get_active_handler_locked(channel_id)
+    if handler is not None:
+        return handler, False
+    handler = PlayHandler(channel_id, token)
+    _active_handlers[channel_id] = handler
+    try:
+        handler.start()
+    except Exception:
+        if _active_handlers.get(channel_id) is handler:
+            _active_handlers.pop(channel_id, None)
+        raise
+    return handler, True
+
+
+def _wait_for_stopping_channel(channel_id: str, timeout: float = 10.0):
+    with state_lock:
+        if guild_status.get(channel_id) != Status.STOP:
+            return
+        handler = _get_active_handler_locked(channel_id)
+    if handler is not None:
+        handler.finished.wait(timeout=timeout)
+    with state_lock:
+        if guild_status.get(channel_id) == Status.STOP:
+            raise RuntimeError('频道正在停止，请稍后重试')
+
+
+def get_state_snapshot(channel_id: Optional[str] = None):
+    """返回播放状态深拷贝，供 Web/API 跨线程安全读取。"""
+    with state_lock:
+        if channel_id is not None:
+            state = play_list.get(str(channel_id))
+            return copy.deepcopy(state) if state is not None else None
+        return {
+            'play_list': copy.deepcopy(play_list),
+            'guild_status': dict(guild_status),
+            'playlist_handle_status': dict(playlist_handle_status),
+        }
+
+
+def reset_playback_state():
+    """向所有 Handler 发出停止信号；实际删除由各 Handler 完成。"""
+    with state_lock:
+        channel_ids = set(play_list) | set(guild_status) | set(playlist_handle_status)
+        for channel_id in channel_ids:
+            if _get_active_handler_locked(channel_id) is None:
+                play_list.pop(channel_id, None)
+                guild_status.pop(channel_id, None)
+                playlist_handle_status.pop(channel_id, None)
+                continue
+            guild_status[channel_id] = Status.STOP
+            state = play_list.get(channel_id)
+            if state is not None:
+                state['_stopping'] = True
+                state['play_list'] = []
+        return channel_ids
+
+
+def wait_for_handlers(channel_ids, timeout: float = 5.0):
+    """等待指定频道的 Handler 完成，返回仍未退出的频道。"""
+    deadline = time.time() + timeout
+    with state_lock:
+        handlers = {
+            channel_id: _get_active_handler_locked(channel_id)
+            for channel_id in channel_ids
+        }
+    for handler in handlers.values():
+        if handler is None:
+            continue
+        remaining = max(0.0, deadline - time.time())
+        handler.finished.wait(remaining)
+    with state_lock:
+        return {
+            channel_id
+            for channel_id in channel_ids
+            if _get_active_handler_locked(channel_id) is not None
+        }
+
+
+def _discard_current_item(channel_id: str):
+    """丢弃无法解析的当前项，避免 now_playing 被下一轮无限重试。"""
+    with state_lock:
+        state = play_list.get(channel_id)
+        if state is not None:
+            state['now_playing'] = None
+        if guild_status.get(channel_id) != Status.STOP:
+            guild_status[channel_id] = Status.END
 
 class Player:
     def __init__(self, channel_id, token=None):
@@ -94,38 +210,54 @@ class Player:
             :param str channel_id: 推流语音频道id（唯一会话标识）
             :param str token: 推流机器人token
         """
-        self.channel_id = str(channel_id)
+        self.channel_id = str(channel_id) if channel_id is not None else ""
 
-        if self.channel_id in play_list:
-            if token is None:
-                token = play_list[self.channel_id]['token']
-            elif token != play_list[self.channel_id]['token']:
-                raise ValueError('播放歌曲过程中无法更换token')
+        with state_lock:
+            if self.channel_id in play_list:
+                if token is None:
+                    token = play_list[self.channel_id]['token']
+                elif token != play_list[self.channel_id]['token']:
+                    raise ValueError('播放歌曲过程中无法更换token')
         self.token = str(token) if token else ""
 
     def join(self, guild_id: str = ""):
         """加入语音频道并开始推流
             :param str guild_id: 服务器id（元数据）"""
-        global guild_status
         if not self.channel_id:
             raise ValueError('第一次启动推流时，你需要指定语音频道id')
         if not self.token:
             raise ValueError('第一次启动推流时，你需要指定机器人token')
-        if self.channel_id not in play_list:
-            play_list[self.channel_id] = {'token': self.token,
-                                          'guild_id': str(guild_id),
-                                          'voice_channel': self.channel_id,
-                                          'repeat': False,
-                                          '_queue_backup': None,
-                                          'now_playing': None,
-                                          'play_list': []}
-        guild_status[self.channel_id] = Status.WAIT
-        play_list[self.channel_id]['voice_channel'] = self.channel_id
+        _wait_for_stopping_channel(self.channel_id)
+        with state_lock:
+            state = play_list.get(self.channel_id)
+            if state is None:
+                state = _new_channel_state(self.channel_id, self.token, guild_id)
+                play_list[self.channel_id] = state
+            else:
+                state['guild_id'] = str(guild_id) or state.get('guild_id', '')
+                state['voice_channel'] = self.channel_id
+                state['_stopping'] = False
+
+            handler = _get_active_handler_locked(self.channel_id)
+            if handler is not None:
+                if log_enabled:
+                    logger.info(f'频道已有播放处理器，复用现有会话: {self.channel_id}')
+                return False
+
+            guild_status[self.channel_id] = (
+                Status.END if state.get('play_list') else Status.WAIT
+            )
+            _start_handler_locked(self.channel_id, self.token)
         if log_enabled:
             logger.info(f'加入语音频道: {self.channel_id}，服务器: {guild_id}')
-        PlayHandler(self.channel_id, self.token).start()
+        return True
 
-    def add_music(self, music: str, extra_data: dict = {}):
+    def add_music(
+        self,
+        music: str,
+        extra_data: Optional[dict] = None,
+        guild_id: str = "",
+    ):
         """
         添加音乐到播放列表
             :param str music: 音乐文件路径或音乐链接
@@ -135,41 +267,45 @@ class Player:
             raise ValueError('频道id不能为空')
         if not self.token:
             raise ValueError('第一次启动推流时，你需要指定机器人token')
-        need_start = False
-        if self.channel_id not in play_list:
-            need_start = True
-            play_list[self.channel_id] = {'token': self.token,
-                                          'guild_id': '',
-                                          'voice_channel': self.channel_id,
-                                          'repeat': False,
-                                          '_queue_backup': None,
-                                          'now_playing': None,
-                                          'play_list': []}
         # 检查是否是歌单歌曲标记，如果是则跳过文件存在检查
         if not music.startswith("PLAYLIST_SONG:") and not music.startswith("QQ_PLAYLIST_SONG:") and not music.startswith("BILI_PLAYLIST_SONG:"):
             if 'http' not in music:
                 if not os.path.exists(music):
                     raise ValueError('文件不存在')
 
-        play_list[self.channel_id]['voice_channel'] = self.channel_id
-        play_list[self.channel_id]['play_list'].append({'file': music, 'ss': 0, 'extra': extra_data})
+        _wait_for_stopping_channel(self.channel_id)
+        with state_lock:
+            state = play_list.get(self.channel_id)
+            if state is None:
+                state = _new_channel_state(self.channel_id, self.token, guild_id)
+                play_list[self.channel_id] = state
+            elif guild_id:
+                state['guild_id'] = str(guild_id)
+            state['voice_channel'] = self.channel_id
+            state['_stopping'] = False
+            state['play_list'].append({
+                'file': music,
+                'ss': 0,
+                'extra': extra_data or {},
+            })
+            if guild_status.get(self.channel_id) == Status.WAIT:
+                guild_status[self.channel_id] = Status.END
+            _start_handler_locked(self.channel_id, self.token)
         if log_enabled:
             logger.info(f'添加音乐到播放列表，频道: {self.channel_id}，音乐: {music}')
-        if self.channel_id in guild_status and guild_status[self.channel_id] == Status.WAIT:
-            guild_status[self.channel_id] = Status.END
-        if need_start:
-            if play_list[self.channel_id]['play_list']:
-                PlayHandler(self.channel_id, self.token).start()
-            elif ((self.channel_id not in playlist_handle_status
-                   or (not playlist_handle_status[self.channel_id]))
-                  and play_list[self.channel_id]['play_list']):
-                PlayHandler(self.channel_id, self.token).start()
 
     def stop(self):
-        global guild_status, playlist_handle_status
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        guild_status[self.channel_id] = Status.STOP
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            state = play_list[self.channel_id]
+            state['_stopping'] = True
+            state['play_list'] = []
+            guild_status[self.channel_id] = Status.STOP
+            if _get_active_handler_locked(self.channel_id) is None:
+                play_list.pop(self.channel_id, None)
+                guild_status.pop(self.channel_id, None)
+                playlist_handle_status.pop(self.channel_id, None)
         if log_enabled:
             logger.info(f'停止播放，频道: {self.channel_id}')
 
@@ -178,53 +314,51 @@ class Player:
         跳过指定数量的歌曲
             :param amount int: 要跳过的歌曲数量,默认为一首
         '''
-        global guild_status
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        for i in range(skip_amount - 1):
-            try:
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            for _ in range(skip_amount - 1):
                 if play_list[self.channel_id]['play_list']:
                     play_list[self.channel_id]['play_list'].pop(0)
-            except:
-                pass
-        guild_status[self.channel_id] = Status.SKIP
+            guild_status[self.channel_id] = Status.SKIP
         if log_enabled:
             logger.info(f'跳过了 {skip_amount} 首歌曲，频道: {self.channel_id}')
 
     def pause(self):
-        global guild_status
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        guild_status[self.channel_id] = Status.PAUSE
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            guild_status[self.channel_id] = Status.PAUSE
         if log_enabled:
             logger.info(f'暂停播放，频道: {self.channel_id}')
 
     def resume(self):
-        global guild_status
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        guild_status[self.channel_id] = Status.PLAYING
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            guild_status[self.channel_id] = Status.PLAYING
         if log_enabled:
             logger.info(f'继续播放，频道: {self.channel_id}')
 
     def list(self, json=True):
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        if json:
-            result = []
-            if play_list[self.channel_id]['now_playing']:
-                result.append(play_list[self.channel_id]['now_playing'])
-            result.extend(play_list[self.channel_id]['play_list'])
-            return result
-        else:
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            if json:
+                result = []
+                if play_list[self.channel_id]['now_playing']:
+                    result.append(copy.deepcopy(play_list[self.channel_id]['now_playing']))
+                result.extend(copy.deepcopy(play_list[self.channel_id]['play_list']))
+                return result
             return []
 
     def repeat_toggle(self):
         """切换单曲循环开关，返回切换后的状态"""
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        current = play_list[self.channel_id].get('repeat', False)
-        play_list[self.channel_id]['repeat'] = not current
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            current = play_list[self.channel_id].get('repeat', False)
+            play_list[self.channel_id]['repeat'] = not current
         if log_enabled:
             logger.info(f'单曲循环: {"开启" if not current else "关闭"}，频道: {self.channel_id}')
         return not current
@@ -232,20 +366,21 @@ class Player:
     def shuffle_toggle(self):
         """切换随机播放，返回 (enabled, count)"""
         import random
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        ch = play_list[self.channel_id]
-        queue = ch.get('play_list', [])
-        if ch.get('_queue_backup') is not None:
-            ch['play_list'] = ch['_queue_backup']
-            ch['_queue_backup'] = None
-            if log_enabled:
-                logger.info(f'随机播放: 关闭，恢复原序 {len(queue)} 首，频道: {self.channel_id}')
-            return False, len(queue)
-        backup = list(queue)
-        random.shuffle(queue)
-        ch['play_list'] = queue
-        ch['_queue_backup'] = backup
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            ch = play_list[self.channel_id]
+            queue = ch.get('play_list', [])
+            if ch.get('_queue_backup') is not None:
+                ch['play_list'] = ch['_queue_backup']
+                ch['_queue_backup'] = None
+                if log_enabled:
+                    logger.info(f'随机播放: 关闭，恢复原序 {len(queue)} 首，频道: {self.channel_id}')
+                return False, len(queue)
+            backup = list(queue)
+            random.shuffle(queue)
+            ch['play_list'] = queue
+            ch['_queue_backup'] = backup
         if log_enabled:
             logger.info(f'随机播放: 开启，打乱 {len(queue)} 首，频道: {self.channel_id}')
         return True, len(queue)
@@ -255,18 +390,17 @@ class Player:
         跳转至歌曲指定位置
             :param music_seconds int: 所要跳转到歌曲的秒数
         '''
-        global play_list
-        if self.channel_id not in play_list:
-            raise ValueError('该频道没有正在播放的歌曲')
-        if play_list[self.channel_id]['now_playing']:
-            now_play = play_list[self.channel_id]['now_playing'].copy()
-            now_play['ss'] = int(music_seconds)
-            if 'start' in now_play:
-                del now_play['start']
-            play_list[self.channel_id]['play_list'].insert(0, now_play)
-            guild_status[self.channel_id] = Status.SKIP
-            if log_enabled:
-                logger.info(f'跳转至 {music_seconds} 秒，频道: {self.channel_id}')
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            if play_list[self.channel_id]['now_playing']:
+                now_play = play_list[self.channel_id]['now_playing'].copy()
+                now_play['ss'] = int(music_seconds)
+                now_play.pop('start', None)
+                play_list[self.channel_id]['play_list'].insert(0, now_play)
+                guild_status[self.channel_id] = Status.SKIP
+                if log_enabled:
+                    logger.info(f'跳转至 {music_seconds} 秒，频道: {self.channel_id}')
 
 
 # 事件处理部分
@@ -298,74 +432,136 @@ class PlayHandler(threading.Thread):
     _rtp_channel_id: str = None
 
     def __init__(self, channel_id: str, token: str):
-        threading.Thread.__init__(self)
+        threading.Thread.__init__(
+            self,
+            name=f'kookvoice-{channel_id}',
+            daemon=True,
+        )
         self.token = token
         self.channel_id = channel_id
         self.requestor = VoiceRequestor(token)
+        self.finished = threading.Event()
 
     def run(self):
         if log_enabled:
             logger.info(f'开始处理，频道: {self.channel_id}')
         loop_t = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop_t)
-        loop_t.run_until_complete(self.main())
-        if log_enabled:
-            logger.info(f'处理完成，频道: {self.channel_id}')
+        try:
+            asyncio.set_event_loop(loop_t)
+            loop_t.run_until_complete(self.main())
+        except Exception:
+            logger.exception('播放处理器异常退出，频道: %s', self.channel_id)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop_t)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop_t.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                pass
+            loop_t.close()
+            with state_lock:
+                if _active_handlers.get(self.channel_id) is self:
+                    _active_handlers.pop(self.channel_id, None)
+            self.finished.set()
+            if log_enabled:
+                logger.info(f'处理完成，频道: {self.channel_id}')
 
     async def main(self):
         start_event = asyncio.Event()
         task1 = asyncio.create_task(self.push())
         task2 = asyncio.create_task(self.keepalive())
         task3 = asyncio.create_task(self.stop(start_event))
-
         try:
-            done, pending = await asyncio.wait(
+            done, _ = await asyncio.wait(
                 [task1, task2],
                 return_when=asyncio.FIRST_COMPLETED
             )
+            for task in done:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    logger.error(
+                        '播放任务提前结束，频道=%s: %s',
+                        self.channel_id,
+                        error,
+                    )
         finally:
-            for task in pending:
-                task.cancel()
-            # 允许取消后的清理逻辑执行
-            await asyncio.sleep(0.1)
-
-        start_event.set()
-        await task3
+            for task in (task1, task2):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(task1, task2, return_exceptions=True)
+            start_event.set()
+            await task3
 
     async def stop(self, start_event):
         await start_event.wait()
-        global playlist_handle_status
-        if self.channel_id in play_list:
-            del play_list[self.channel_id]
-        if self.channel_id in playlist_handle_status and playlist_handle_status[self.channel_id]:
-            playlist_handle_status[self.channel_id] = False
-        guild_status.pop(self.channel_id, None)
+        with state_lock:
+            owns_channel = _active_handlers.get(self.channel_id) is self
+
+        if not owns_channel:
+            try:
+                await self.requestor.close()
+            except Exception:
+                pass
+            self.finished.set()
+            return
+
         try:
-            await self.requestor.leave(self._rtp_channel_id or self.channel_id)
-        except:
+            await asyncio.wait_for(
+                self.requestor.leave(self._rtp_channel_id or self.channel_id),
+                timeout=5,
+            )
+        except Exception:
             pass
+        finally:
+            try:
+                await self.requestor.close()
+            except Exception:
+                pass
+            with state_lock:
+                if _active_handlers.get(self.channel_id) is self:
+                    play_list.pop(self.channel_id, None)
+                    playlist_handle_status.pop(self.channel_id, None)
+                    guild_status.pop(self.channel_id, None)
+                    _active_handlers.pop(self.channel_id, None)
+            self.finished.set()
         if log_enabled:
             logger.info(f'停止并清理，频道: {self.channel_id}')
 
     async def push(self):
-        global playlist_handle_status
-        playlist_handle_status[self.channel_id] = True
+        with state_lock:
+            playlist_handle_status[self.channel_id] = True
         try:
             await asyncio.sleep(1)
-            if self.channel_id in play_list and 'voice_channel' in play_list[self.channel_id]:
-                rtp_ch = play_list[self.channel_id]['voice_channel']
+            with state_lock:
+                state = play_list.get(self.channel_id)
+                rtp_ch = state.get('voice_channel') if state else None
+            if rtp_ch:
                 self._rtp_channel_id = rtp_ch
 
                 try:
-                    await self.requestor.leave(self._rtp_channel_id)
-                except:
-                    pass
-                try:
                     res = await self.requestor.join(self._rtp_channel_id)
-                except Exception as e:
-                    if log_enabled:
-                        logger.error(f'加入频道失败: {e}')
-                    raise RuntimeError(f'加入频道失败 {e}')
+                except Exception as first_error:
+                    # 仅在 join 失败时清理可能残留的旧会话后重试一次。
+                    try:
+                        await self.requestor.leave(self._rtp_channel_id)
+                    except Exception:
+                        pass
+                    try:
+                        res = await self.requestor.join(self._rtp_channel_id)
+                    except Exception as retry_error:
+                        if log_enabled:
+                            logger.error(
+                                '加入频道失败: 首次=%s, 重试=%s',
+                                first_error,
+                                retry_error,
+                            )
+                        raise RuntimeError(f'加入频道失败 {retry_error}')
 
                 rtp_url = f"rtp://{res['ip']}:{res['port']}?rtcpport={res['rtcp_port']}"
                 if log_enabled:
@@ -380,14 +576,33 @@ class PlayHandler(threading.Thread):
                 bitrate = int(res['bitrate'] / 1000)
                 bitrate *= 0.9 if bitrate > 100 else 1
 
-                while self.channel_id in guild_status and guild_status[self.channel_id] == Status.WAIT:
+                while True:
+                    with state_lock:
+                        waiting = guild_status.get(self.channel_id) == Status.WAIT
+                    if not waiting:
+                        break
                     await asyncio.sleep(2)
 
-                command = f"{ffmpeg_bin} -re -loglevel level+info -nostats -f wav -i - -map 0:a:0 -acodec libopus -ab {bitrate}k -ac 2 -ar 48000 -filter:a volume=1.0 -f tee [select=a:f=rtp:ssrc={audio_ssrc}:payload_type={audio_pt}]{rtp_url}"
+                encoder_args = [
+                    ffmpeg_bin,
+                    '-re',
+                    '-loglevel', 'level+info',
+                    '-nostats',
+                    '-f', 'wav',
+                    '-i', '-',
+                    '-map', '0:a:0',
+                    '-acodec', 'libopus',
+                    '-ab', f'{bitrate}k',
+                    '-ac', '2',
+                    '-ar', '48000',
+                    '-filter:a', 'volume=1.0',
+                    '-f', 'tee',
+                    f'[select=a:f=rtp:ssrc={audio_ssrc}:payload_type={audio_pt}]{rtp_url}',
+                ]
                 if log_enabled:
-                    logger.info(f'运行 ffmpeg 命令: {command}')
-                p = await asyncio.create_subprocess_shell(
-                    command,
+                    logger.info('运行 ffmpeg 命令: %s', ' '.join(map(str, encoder_args)))
+                p = await asyncio.create_subprocess_exec(
+                    *encoder_args,
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL
@@ -395,59 +610,80 @@ class PlayHandler(threading.Thread):
 
                 while True:
                     await asyncio.sleep(0.5)
-                    if self.channel_id in play_list:
-                        if play_list[self.channel_id]['now_playing'] and not play_list[self.channel_id]['play_list']:
-                            music_info = play_list[self.channel_id]['now_playing']
+                    with state_lock:
+                        state = play_list.get(self.channel_id)
+                        if state is None:
+                            music_info = None
+                        elif state['now_playing'] and not state['play_list']:
+                            music_info = state['now_playing']
+                        elif state['play_list']:
+                            music_info = state['play_list'].pop(0)
+                            music_info['start'] = time.time()
+                            state['now_playing'] = music_info
                         else:
-                            if play_list[self.channel_id]['play_list']:
-                                music_info = play_list[self.channel_id]['play_list'].pop(0)
-                                music_info['start'] = time.time()
-                                play_list[self.channel_id]['now_playing'] = music_info
-                            else:
-                                break
+                            state['_stopping'] = True
+                            guild_status[self.channel_id] = Status.STOP
+                            music_info = None
+                    if music_info is None:
+                        break
 
-                        if isinstance(music_info, dict) and 'file' in music_info:
+                    if isinstance(music_info, dict) and 'file' in music_info:
                             file = music_info['file']
 
                             # 检查是否是歌单歌曲标记，如果是则尝试解析
                             if file.startswith("PLAYLIST_SONG:"):
                                 try:
-                                    from utils import resolve_marker_batch
+                                    try:
+                                        from ..utils import resolve_marker_batch
+                                    except ImportError:
+                                        from utils import resolve_marker_batch
                                     resolved = resolve_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
                                         logger.info(f'[歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
                                     else:
                                         logger.warning(f'[歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        _discard_current_item(self.channel_id)
                                         continue
                                 except Exception as e:
                                     logger.error(f'[歌单URL] 解析异常: {e}')
+                                    _discard_current_item(self.channel_id)
                                     continue
                             elif file.startswith("QQ_PLAYLIST_SONG:"):
                                 try:
-                                    from qq_utils import resolve_qq_marker_batch
+                                    try:
+                                        from ..qq_utils import resolve_qq_marker_batch
+                                    except ImportError:
+                                        from qq_utils import resolve_qq_marker_batch
                                     resolved = resolve_qq_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
                                         logger.info(f'[QQ歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
                                     else:
                                         logger.warning(f'[QQ歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        _discard_current_item(self.channel_id)
                                         continue
                                 except Exception as e:
                                     logger.error(f'[QQ歌单URL] 解析异常: {e}')
+                                    _discard_current_item(self.channel_id)
                                     continue
                             elif file.startswith("BILI_PLAYLIST_SONG:"):
                                 try:
-                                    from bili_utils import resolve_bili_marker_batch
+                                    try:
+                                        from ..bili_utils import resolve_bili_marker_batch
+                                    except ImportError:
+                                        from bili_utils import resolve_bili_marker_batch
                                     resolved = resolve_bili_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
                                         logger.info(f'[Bili歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
                                     else:
                                         logger.warning(f'[Bili歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        _discard_current_item(self.channel_id)
                                         continue
                                 except Exception as e:
                                     logger.error(f'[Bili歌单URL] 解析异常: {e}')
+                                    _discard_current_item(self.channel_id)
                                     continue
 
                             extra_command = ''
@@ -489,16 +725,28 @@ class PlayHandler(threading.Thread):
 
                                     has_ffprobe = bool(_ffprobe_path and os.path.exists(_ffprobe_path))
                                     if has_ffprobe:
-                                        duration_command = f'"{_ffprobe_path}" -v quiet -show_entries format=duration -of csv=p=0 "{file}"'
+                                        duration_args = [
+                                            _ffprobe_path,
+                                            '-v', 'quiet',
+                                            '-show_entries', 'format=duration',
+                                            '-of', 'csv=p=0',
+                                            file,
+                                        ]
                                         if log_enabled:
-                                            logger.info(f'执行时长获取命令: {duration_command}')
-                                        dur_proc = await asyncio.create_subprocess_shell(
-                                            duration_command,
+                                            logger.info(
+                                                '执行时长获取命令: %s',
+                                                ' '.join(map(str, duration_args)),
+                                            )
+                                        dur_proc = await asyncio.create_subprocess_exec(
+                                            *duration_args,
                                             stdout=asyncio.subprocess.PIPE,
                                             stderr=asyncio.subprocess.PIPE
                                         )
                                         try:
-                                            stdout, _ = await dur_proc.communicate()
+                                            stdout, _ = await asyncio.wait_for(
+                                                dur_proc.communicate(),
+                                                timeout=20,
+                                            )
                                             if stdout:
                                                 duration_text = stdout.decode('utf-8', errors='ignore').strip()
                                                 if duration_text and duration_text != 'N/A':
@@ -519,14 +767,20 @@ class PlayHandler(threading.Thread):
                                     if audio_duration <= 0:
                                         if log_enabled:
                                             logger.info(f'使用备用方法获取时长')
-                                        backup_command = f'{ffmpeg_bin} -i "{file}" {extra_command} -f null -'
-                                        bak_proc = await asyncio.create_subprocess_shell(
-                                            backup_command,
+                                        backup_args = [ffmpeg_bin, '-i', file]
+                                        if extra_command:
+                                            backup_args.extend(shlex.split(extra_command))
+                                        backup_args.extend(['-f', 'null', '-'])
+                                        bak_proc = await asyncio.create_subprocess_exec(
+                                            *backup_args,
                                             stdout=asyncio.subprocess.DEVNULL,
                                             stderr=asyncio.subprocess.PIPE
                                         )
                                         try:
-                                            _, stderr = await bak_proc.communicate()
+                                            _, stderr = await asyncio.wait_for(
+                                                bak_proc.communicate(),
+                                                timeout=30,
+                                            )
                                             stderr_text = stderr.decode('utf-8', errors='ignore')
                                         finally:
                                             await _safe_kill_subprocess(bak_proc, "ffmpeg-dur")
@@ -558,8 +812,10 @@ class PlayHandler(threading.Thread):
                                     logger.info(f'使用默认音频时长: {expected_duration:.2f} 秒')
 
                             try:
-                                if self.channel_id in play_list and play_list[self.channel_id]['now_playing']:
-                                    play_list[self.channel_id]['now_playing']['duration'] = float(expected_duration)
+                                with state_lock:
+                                    state = play_list.get(self.channel_id)
+                                    if state and state['now_playing']:
+                                        state['now_playing']['duration'] = float(expected_duration)
                             except Exception:
                                 pass
 
@@ -602,10 +858,16 @@ class PlayHandler(threading.Thread):
 
                             first_music_start_time = time.time()
 
-                            if self.channel_id not in guild_status:
-                                guild_status[self.channel_id] = Status.END
+                            with state_lock:
+                                if self.channel_id not in guild_status:
+                                    guild_status[self.channel_id] = Status.END
+                                should_trigger_start = (
+                                    guild_status[self.channel_id] == Status.END
+                                )
+                                if should_trigger_start:
+                                    guild_status[self.channel_id] = Status.PLAYING
 
-                            if guild_status[self.channel_id] == Status.END:
+                            if should_trigger_start:
                                 if original_loop:
                                     asyncio.run_coroutine_threadsafe(
                                         trigger_event(
@@ -616,7 +878,6 @@ class PlayHandler(threading.Thread):
                                     )
                                 if log_enabled:
                                     logger.info(f'开始播放: {file}，频道: {self.channel_id}')
-                                guild_status[self.channel_id] = Status.PLAYING
 
                             # 方案E：B站DASH流使用更大缓冲区（2秒），减少I/O抖动
                             chunk_size = 384000 if _is_bili else 96000
@@ -635,7 +896,7 @@ class PlayHandler(threading.Thread):
                                                 timeout=2.0
                                             )
                                         except asyncio.TimeoutError:
-                                            if p2.poll() is not None:
+                                            if p2.returncode is not None:
                                                 if log_enabled:
                                                     logger.warning(f'解码进程已退出: {file}')
                                                 break
@@ -699,36 +960,46 @@ class PlayHandler(threading.Thread):
                                                         elapsed = now - last_write_time
                                                         if elapsed < 0.02:
                                                             await asyncio.sleep(0.02 - elapsed)
-                                                    if self.channel_id in guild_status and guild_status[self.channel_id] == Status.PAUSE:
-                                                        while self.channel_id in guild_status and guild_status[self.channel_id] == Status.PAUSE:
-                                                            await asyncio.sleep(0.1)
+                                                    while True:
+                                                        with state_lock:
+                                                            paused = (
+                                                                guild_status.get(self.channel_id)
+                                                                == Status.PAUSE
+                                                            )
+                                                        if not paused:
+                                                            break
+                                                        await asyncio.sleep(0.1)
                                                     p.stdin.write(audio_slice)
                                                     await p.stdin.drain()
                                                     last_write_time = time.time()
 
-                                                    if self.channel_id in play_list and play_list[self.channel_id]['now_playing']:
-                                                        play_list[self.channel_id]['now_playing']['ss'] = last_write_time - first_music_start_time
+                                                    with state_lock:
+                                                        channel_state = play_list.get(self.channel_id)
+                                                        if channel_state and channel_state['now_playing']:
+                                                            channel_state['now_playing']['ss'] = (
+                                                                last_write_time - first_music_start_time
+                                                            )
+                                                        playback_status = guild_status.get(self.channel_id)
+                                                        if playback_status == Status.SKIP:
+                                                            guild_status[self.channel_id] = Status.END
+                                                        elif playback_status == Status.STOP and channel_state:
+                                                            channel_state['play_list'] = []
 
-                                                    if self.channel_id in guild_status:
-                                                        state = guild_status[self.channel_id]
-                                                        if state == Status.SKIP:
-                                                            if log_enabled:
-                                                                logger.info(f'跳过当前歌曲: {file}')
-                                                            try:
-                                                                guild_status[self.channel_id] = Status.END
-                                                            except Exception:
-                                                                pass
-                                                            skip_song = True
-                                                            await _safe_kill_subprocess(p2, "ffmpeg-decode-skip")
-                                                            break
-                                                        if state == Status.STOP:
-                                                            if log_enabled:
-                                                                logger.info(f'停止播放: {file}')
-                                                            if self.channel_id in play_list:
-                                                                play_list[self.channel_id]['play_list'] = []
-                                                            await _safe_kill_subprocess(p2, "ffmpeg-decode")
-                                                            await _safe_kill_subprocess(p, "ffmpeg-encode")
-                                                            return
+                                                    if playback_status == Status.SKIP:
+                                                        if log_enabled:
+                                                            logger.info(f'跳过当前歌曲: {file}')
+                                                        skip_song = True
+                                                        await _safe_kill_subprocess(
+                                                            p2,
+                                                            "ffmpeg-decode-skip",
+                                                        )
+                                                        break
+                                                    if playback_status == Status.STOP:
+                                                        if log_enabled:
+                                                            logger.info(f'停止播放: {file}')
+                                                        await _safe_kill_subprocess(p2, "ffmpeg-decode")
+                                                        await _safe_kill_subprocess(p, "ffmpeg-encode")
+                                                        return
                                                 except Exception as e:
                                                     if log_enabled:
                                                         logger.error(f'音频写入异常: {e}')
@@ -748,71 +1019,112 @@ class PlayHandler(threading.Thread):
                             await _safe_kill_subprocess(p2, "ffmpeg-decode-done")
 
                             # 保存当前歌曲信息（用于单曲循环）
-                            now_info = None
-                            if self.channel_id in play_list and play_list[self.channel_id]['now_playing']:
-                                now_info = play_list[self.channel_id]['now_playing']
-                                play_list[self.channel_id]['now_playing'] = None
+                            with state_lock:
+                                channel_state = play_list.get(self.channel_id)
+                                now_info = (
+                                    channel_state.get('now_playing')
+                                    if channel_state else None
+                                )
+                                if channel_state:
+                                    channel_state['now_playing'] = None
+                                repeat_on = bool(
+                                    channel_state and channel_state.get('repeat', False)
+                                )
+                                if repeat_on and now_info and isinstance(now_info, dict):
+                                    replay = now_info.copy()
+                                    replay['ss'] = 0
+                                    replay.pop('start', None)
+                                    channel_state['play_list'].insert(0, replay)
+                                queue_empty = bool(
+                                    channel_state is None
+                                    or not channel_state['play_list']
+                                )
+                                if queue_empty:
+                                    playlist_handle_status[self.channel_id] = False
 
-                            # 单曲循环：将刚才播放的歌曲重新插入队列头部
-                            repeat_on = (self.channel_id in play_list
-                                         and play_list[self.channel_id].get('repeat', False))
                             if repeat_on and now_info and isinstance(now_info, dict):
-                                replay = now_info.copy()
-                                replay['ss'] = 0
-                                replay.pop('start', None)
-                                if self.channel_id in play_list:
-                                    play_list[self.channel_id]['play_list'].insert(0, replay)
                                 if log_enabled:
                                     logger.info(f'单曲循环: 重新加入队列，频道: {self.channel_id}')
 
-                            if self.channel_id in play_list and len(play_list[self.channel_id]['play_list']) == 0:
-                                await _safe_kill_subprocess(p2, "ffmpeg-decode")
-                                await _safe_kill_subprocess(p, "ffmpeg-encode")
-                                if self.channel_id in playlist_handle_status:
-                                    playlist_handle_status[self.channel_id] = False
+                            if queue_empty:
                                 if log_enabled:
                                     logger.info(f'播放列表结束，频道: {self.channel_id}')
                             else:
                                 try:
-                                    from utils import refill_playlist_queue
-                                    refill_playlist_queue(self.channel_id, play_list)
+                                    try:
+                                        from ..utils import refill_playlist_queue
+                                    except ImportError:
+                                        from utils import refill_playlist_queue
+                                    refill_playlist_queue(
+                                        self.channel_id, play_list, lock=state_lock
+                                    )
                                 except Exception:
                                     pass
                                 try:
-                                    from qq_utils import refill_qq_playlist_queue
-                                    refill_qq_playlist_queue(self.channel_id, play_list)
+                                    try:
+                                        from ..qq_utils import refill_qq_playlist_queue
+                                    except ImportError:
+                                        from qq_utils import refill_qq_playlist_queue
+                                    refill_qq_playlist_queue(
+                                        self.channel_id, play_list, lock=state_lock
+                                    )
                                 except Exception:
                                     pass
                                 try:
-                                    from bili_utils import refill_bili_playlist_queue
-                                    refill_bili_playlist_queue(self.channel_id, play_list)
+                                    try:
+                                        from ..bili_utils import refill_bili_playlist_queue
+                                    except ImportError:
+                                        from bili_utils import refill_bili_playlist_queue
+                                    refill_bili_playlist_queue(
+                                        self.channel_id, play_list, lock=state_lock
+                                    )
                                 except Exception:
                                     pass
-                                guild_status[self.channel_id] = Status.END
+                                with state_lock:
+                                    if self.channel_id in play_list:
+                                        guild_status[self.channel_id] = Status.END
                                 if log_enabled:
                                     logger.info(f'准备播放下一首歌曲，频道: {self.channel_id}')
                     else:
                         break
+                await _safe_kill_subprocess(p, "ffmpeg-encode-done")
         except Exception as e:
             if log_enabled:
                 logger.error(f'推流过程中出现错误: {str(e)}', exc_info=True)
+        finally:
             try:
-                await _safe_kill_subprocess(locals().get('p2'), "ffmpeg-decode-exc")
+                await _safe_kill_subprocess(locals().get('p2'), "ffmpeg-decode-final")
             except Exception:
                 pass
             try:
-                await _safe_kill_subprocess(locals().get('p'), "ffmpeg-encode-exc")
+                await _safe_kill_subprocess(locals().get('p'), "ffmpeg-encode-final")
             except Exception:
                 pass
 
     async def keepalive(self):
+        consecutive_failures = 0
         while True:
             await asyncio.sleep(45)
-            if self._rtp_channel_id:
-                await self.requestor.keep_alive(self._rtp_channel_id)
-            elif self.channel_id:
-                await self.requestor.keep_alive(self.channel_id)
-            logger.info(f'[保活] 频道={self.channel_id}')
+            try:
+                if self._rtp_channel_id:
+                    await self.requestor.keep_alive(self._rtp_channel_id)
+                elif self.channel_id:
+                    await self.requestor.keep_alive(self.channel_id)
+                consecutive_failures = 0
+                if log_enabled:
+                    logger.info(f'[保活] 频道={self.channel_id}')
+            except Exception as exc:
+                consecutive_failures += 1
+                logger.warning(
+                    '[保活] 频道=%s 失败（%d/3）: %s',
+                    self.channel_id,
+                    consecutive_failures,
+                    exc,
+                )
+                if consecutive_failures >= 3:
+                    raise RuntimeError(
+                        f'频道 {self.channel_id} 连续保活失败'
+                    ) from exc
 
 async def start():
     global original_loop
