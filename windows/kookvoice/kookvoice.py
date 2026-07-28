@@ -48,6 +48,40 @@ def set_loop(loop):
     original_loop = loop
 
 
+def _build_decoder_command(file, ss_value=0, is_bili=False, extra_command=''):
+    """构造兼容当前 FFmpeg 的网络音频解码参数。"""
+    timeout_us = 60000000 if is_bili else 30000000
+    command = [
+        ffmpeg_bin,
+        '-loglevel', 'error',
+        '-nostats',
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-rw_timeout', str(timeout_us),
+    ]
+    if is_bili:
+        command.extend([
+            '-user_agent',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '-referer', 'https://www.bilibili.com/',
+        ])
+    if extra_command:
+        # headers/cookies/user_agent/referer 都是输入选项，必须位于 -i 之前。
+        command.extend(shlex.split(extra_command))
+    command.extend([
+        '-ss', str(ss_value),
+        '-i', str(file),
+        '-filter:a', 'volume=0.4',
+        '-acodec', 'pcm_s16le',
+        '-ac', '2',
+        '-ar', '48000',
+        '-f', 'wav',
+        '-y', '-',
+    ])
+    return command
+
+
 async def _safe_kill_subprocess(proc, label="ffmpeg"):
     """安全终止 asyncio 子进程：先关闭管道再 kill，防止 Windows ProactorEventLoop 管道泄漏"""
     if proc is None:
@@ -1240,27 +1274,12 @@ class PlayHandler(threading.Thread):
                             # 方案B+E：B站DASH流优化 — 更大超时、B站专用请求头
                             # 改用 create_subprocess_exec（参数列表）避免 Windows cmd.exe
                             # 破坏URL中的%编码字符（%3D/%2F等）
-                            _timeout_us = 60000000 if _is_bili else 30000000
-                            _cmd2 = [
-                                ffmpeg_bin, '-nostats',
-                                '-reconnect', '1', '-reconnect_streamed', '1',
-                                '-reconnect_delay_max', '5',
-                                '-timeout', str(_timeout_us),
-                            ]
-                            if _is_bili:
-                                _cmd2.extend([
-                                    '-user_agent',
-                                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                                    '-referer', 'https://www.bilibili.com/',
-                                ])
-                            _cmd2.extend(['-ss', str(ss_value), '-i', file])
-                            if extra_command:
-                                _cmd2.extend(shlex.split(extra_command))
-                            _cmd2.extend([
-                                '-filter:a', 'volume=0.4',
-                                '-acodec', 'pcm_s16le', '-ac', '2', '-ar', '48000',
-                                '-f', 'wav', '-y', '-',
-                            ])
+                            _cmd2 = _build_decoder_command(
+                                file,
+                                ss_value=ss_value,
+                                is_bili=_is_bili,
+                                extra_command=extra_command,
+                            )
                             if log_enabled:
                                 logger.info(f'正在播放文件: {file}')
                                 logger.info(f'解码命令: {" ".join(_cmd2)[:300]}')
@@ -1271,7 +1290,7 @@ class PlayHandler(threading.Thread):
                                     *_cmd2,
                                     stdin=asyncio.subprocess.DEVNULL,
                                     stdout=asyncio.subprocess.PIPE,
-                                    stderr=asyncio.subprocess.DEVNULL
+                                    stderr=asyncio.subprocess.PIPE
                                 ),
                                 "ffmpeg-decode",
                             )

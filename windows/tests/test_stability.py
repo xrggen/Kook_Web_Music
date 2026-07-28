@@ -414,6 +414,23 @@ class PlaybackStateTests(unittest.TestCase):
             kookvoice.set_ffmpeg(fake_binary)
             self.assertTrue(Path(kookvoice.ffmpeg_bin).samefile(fake_binary))
 
+    def test_bili_decoder_uses_supported_io_timeout_and_input_options(self):
+        command = kookvoice._build_decoder_command(
+            "https://example.invalid/audio.m4s",
+            ss_value=12,
+            is_bili=True,
+            extra_command='-headers "Cookie: test=1"',
+        )
+
+        self.assertNotIn("-timeout", command)
+        self.assertIn("-rw_timeout", command)
+        timeout_index = command.index("-rw_timeout")
+        self.assertEqual(command[timeout_index + 1], "60000000")
+        self.assertEqual(command[command.index("-loglevel") + 1], "error")
+        self.assertLess(command.index("-headers"), command.index("-i"))
+        self.assertLess(command.index("-referer"), command.index("-i"))
+        self.assertEqual(command[command.index("-ss") + 1], "12")
+
 
 class PlaylistCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_playlist_is_sent_as_sanitized_plain_text(self):
