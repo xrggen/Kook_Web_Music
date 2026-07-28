@@ -415,6 +415,62 @@ class PlaybackStateTests(unittest.TestCase):
             self.assertTrue(Path(kookvoice.ffmpeg_bin).samefile(fake_binary))
 
 
+class PlaylistCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_playlist_is_sent_as_sanitized_plain_text(self):
+        class Guild:
+            id = "guild-1"
+
+        class Context:
+            guild = Guild()
+
+        class FakeMessage:
+            author_id = "user-1"
+            ctx = Context()
+
+            def __init__(self):
+                self.reply = mock.AsyncMock()
+
+        message = FakeMessage()
+        state = {
+            "now_playing": {
+                "extra": {"title": "正在\n播放\x00的歌曲"},
+            },
+            "play_list": [
+                {
+                    "extra": {
+                        "音乐名字": "很长的歌名" * 30,
+                    }
+                }
+            ],
+        }
+
+        with (
+            mock.patch.object(
+                windows_app,
+                "_resolve_channel",
+                new=mock.AsyncMock(return_value="voice-1"),
+            ),
+            mock.patch.object(
+                windows_app.kookvoice,
+                "get_state_snapshot",
+                return_value=state,
+            ),
+        ):
+            await windows_app.playlist_cmd.handler(message, "")
+
+        message.reply.assert_awaited_once()
+        content = message.reply.await_args.args[0]
+        self.assertNotIn("\n播放", content)
+        self.assertNotIn("\x00", content)
+        self.assertIn("正在 播放的歌曲", content)
+        self.assertIn("…", content)
+        self.assertFalse(message.reply.await_args.kwargs["use_quote"])
+        self.assertEqual(
+            message.reply.await_args.kwargs["type"],
+            windows_app.MessageTypes.TEXT,
+        )
+
+
 class EmergencyRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         with kookvoice.state_lock:

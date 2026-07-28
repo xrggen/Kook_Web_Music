@@ -91,6 +91,24 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+### 7.1 安装本机 Node.js 依赖
+
+```bash
+# 网易云音乐 API
+cd NeteaseCloudMusicApi/NeteaseCloudMusicApiBackup-main
+npm install
+
+# QQ 音乐 API
+cd ../../qq-music-api
+npm install
+npm run build
+
+# 回到 Ubuntu 项目目录
+cd ..
+```
+
+> 不要从 Windows 目录或其他服务器复制 `venv`、`node_modules`。它们包含操作系统和安装路径相关内容，应在当前 Ubuntu 主机的 `Ubuntu/` 目录中分别重新创建，两个版本之间不得共享依赖目录。
+
 ### 8. 配置环境变量
 
 #### 方法一：使用提供的脚本创建.env文件

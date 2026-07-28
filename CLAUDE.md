@@ -28,7 +28,6 @@ Kook_Web_Music/
 │   │   └── requestor.py       # KOOK voice API (join/leave/keep-alive) via aiohttp
 │   ├── NeteaseCloudMusicApi/  # Local Node.js Express API (port 3000)
 │   ├── qq-music-api/          # Local Node.js Koa2 TypeScript API (port 3200)
-│   ├── bilibili-api/          # Local Bilibili API (direct REST, no proxy needed)
 │   ├── ffmpeg/                # Bundled FFmpeg binaries (bin/ffmpeg.exe)
 │   ├── Cookie/                # Cookie storage (.txt files per platform)
 │   ├── templates/             # Jinja2: index.html, dashboard.html, account.html

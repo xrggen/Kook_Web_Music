@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+
 env_content = """# KOOK机器人配置
 BOT_TOKEN=your_bot_token_here
 
 # FFMPEG配置
-FFMPEG_PATH=./ffmpeg/bin/ffmpeg.exe
-FFPROBE_PATH=./ffmpeg/bin/ffprobe.exe
+FFMPEG_PATH=/usr/bin/ffmpeg
+FFPROBE_PATH=/usr/bin/ffprobe
 
 # 音乐API配置
 MUSIC_API_BASE=http://localhost:3000
@@ -18,7 +20,8 @@ PORT=5000
 DEBUG=True
 """
 
-with open('.env', 'w', encoding='utf-8') as f:
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+with open(env_path, 'w', encoding='utf-8') as f:
     f.write(env_content)
 
-print("✅ .env文件创建成功！")
+print(f"✅ .env文件创建成功：{env_path}")

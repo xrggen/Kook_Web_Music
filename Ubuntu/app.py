@@ -9,7 +9,7 @@ import requests
 import logging
 import shlex
 import subprocess
-from khl import Bot, Message
+from khl import Bot, Message, MessageTypes
 from khl.command.lexer import DefaultLexer
 from khl.command.exception import Exceptions
 
@@ -1097,6 +1097,24 @@ async def bili_account_cmd(msg: Message):
         await msg.reply("⚠️ 获取B站账号信息失败，请稍后再试")
 
 PAGE_SIZE = 20
+PLAYLIST_TITLE_LIMIT = 72
+
+
+def _playlist_display_name(item: Any) -> str:
+    """将外部平台标题规整为可安全发送的单行纯文本。"""
+    extra = item.get("extra", {}) if isinstance(item, dict) else {}
+    if not isinstance(extra, dict):
+        extra = {}
+    raw_name = extra.get("音乐名字") or extra.get("title") or "未知歌曲"
+    name = "".join(
+        " " if char.isspace() else char
+        for char in str(raw_name)
+        if char.isspace() or (ord(char) >= 32 and ord(char) != 127)
+    )
+    name = " ".join(name.split()) or "未知歌曲"
+    if len(name) > PLAYLIST_TITLE_LIMIT:
+        name = f"{name[:PLAYLIST_TITLE_LIMIT - 1]}…"
+    return name
 
 @bot.command(name='播放列表')
 async def playlist_cmd(msg: Message, page_input: str = ''):
@@ -1132,8 +1150,7 @@ async def playlist_cmd(msg: Message, page_input: str = ''):
         lines = [f"📋 播放列表 (第 {page}/{total_pages} 页，共 {total} 首):"]
 
         if now_playing:
-            extra = now_playing.get("extra", {})
-            name = extra.get("音乐名字") or extra.get("title", "未知歌曲")
+            name = _playlist_display_name(now_playing)
             lines.append(f"▶️ 正在播放: {name}")
         else:
             lines.append("▶️ 当前未在播放")
@@ -1141,8 +1158,7 @@ async def playlist_cmd(msg: Message, page_input: str = ''):
         if queue:
             for i in range(start, end):
                 item = queue[i]
-                extra = item.get("extra", {})
-                name = extra.get("音乐名字") or extra.get("title", "未知歌曲")
+                name = _playlist_display_name(item)
                 lines.append(f"  {i + 1}. {name}")
         elif not now_playing:
             lines.append("  (空)")
@@ -1150,7 +1166,13 @@ async def playlist_cmd(msg: Message, page_input: str = ''):
         if total_pages > 1:
             lines.append(f"💡 输入 /播放列表 <页数> 翻页")
 
-        await msg.reply("\n".join(lines))
+        # khl.py 默认使用 KMarkdown；外部歌曲标题可能使 KOOK 返回 40011。
+        # 列表不需要富文本或引用，明确按普通文本发送。
+        await msg.reply(
+            "\n".join(lines),
+            use_quote=False,
+            type=MessageTypes.TEXT,
+        )
     except Exception as e:
         logger.error(f"[命令:播放列表] 出错: {e}")
         await msg.reply("⚠️ 获取播放列表失败，请稍后再试")

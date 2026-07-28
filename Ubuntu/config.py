@@ -8,10 +8,10 @@ PORT = 5000
 # KOOK机器人配置
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token_here")
 
-# FFMPEG配置 - 使用相对路径
+# FFmpeg 使用 Ubuntu 系统安装路径，禁止回退到 Windows 内置二进制。
 current_dir = os.path.dirname(os.path.abspath(__file__))
-FFMPEG_PATH = os.environ.get("FFMPEG_PATH", os.path.join(current_dir, "ffmpeg", "bin", "ffmpeg.exe"))
-FFPROBE_PATH = os.environ.get("FFPROBE_PATH", "").strip()
+FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "/usr/bin/ffmpeg").strip()
+FFPROBE_PATH = os.environ.get("FFPROBE_PATH", "/usr/bin/ffprobe").strip()
 
 # 音乐API配置
 MUSIC_API_BASE = os.environ.get("MUSIC_API_BASE", "http://localhost:3000")

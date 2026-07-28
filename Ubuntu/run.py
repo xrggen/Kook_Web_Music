@@ -381,7 +381,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 try:
     # 加载环境变量
     logger.info("正在加载环境变量...")
-    load_dotenv()
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
     # 启动本地音乐API
     start_music_api()
