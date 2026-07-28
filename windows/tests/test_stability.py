@@ -431,6 +431,41 @@ class PlaybackStateTests(unittest.TestCase):
         self.assertLess(command.index("-referer"), command.index("-i"))
         self.assertEqual(command[command.index("-ss") + 1], "12")
 
+    def test_handler_reaps_subprocess_pipes_before_closing_thread_loop(self):
+        handler = self.original_handler("subprocess-cleanup-test", "token")
+        created = {}
+
+        async def spawn_tracked_subprocess():
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                (
+                    "import sys,time;"
+                    "sys.stdout.write('out');sys.stdout.flush();"
+                    "sys.stderr.write('err');sys.stderr.flush();"
+                    "time.sleep(30)"
+                ),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            created["proc"] = handler._track_subprocess(
+                proc,
+                "ffmpeg-cleanup-test",
+            )
+            await asyncio.sleep(0)
+
+        handler.main = spawn_tracked_subprocess
+        handler.run()
+
+        proc = created["proc"]
+        self.assertIsNotNone(proc.returncode)
+        self.assertTrue(proc.stdin.is_closing())
+        self.assertTrue(proc.stdout.at_eof())
+        self.assertTrue(proc.stderr.at_eof())
+        self.assertEqual(handler._subprocesses, {})
+        self.assertIsNone(handler._loop)
+
 
 class PlaylistCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_playlist_is_sent_as_sanitized_plain_text(self):

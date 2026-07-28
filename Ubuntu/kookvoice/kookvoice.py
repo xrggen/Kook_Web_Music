@@ -74,27 +74,47 @@ def _build_decoder_command(file, ss_value=0, is_bili=False, extra_command=''):
 
 
 async def _safe_kill_subprocess(proc, label="ffmpeg"):
-    """安全终止 asyncio 子进程：先关闭管道再 kill，防止 Windows ProactorEventLoop 管道泄漏"""
+    """在事件循环仍存活时终止子进程，并完整回收其异步管道。"""
     if proc is None:
         return
-    # 先关闭所有管道，防止 ProactorEventLoop 的 __del__ 报 closed pipe
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
-        if pipe is not None:
-            try:
-                pipe.close()
-            except Exception:
-                pass
-    # 再终止进程
+
+    stdin = getattr(proc, 'stdin', None)
+    if stdin is not None:
+        try:
+            stdin.close()
+            wait_closed = getattr(stdin, 'wait_closed', None)
+            if wait_closed is not None:
+                await asyncio.wait_for(wait_closed(), timeout=1)
+        except (BrokenPipeError, ConnectionResetError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            pass
+
     try:
         if proc.returncode is None:
             proc.kill()
-    except Exception:
+    except (ProcessLookupError, OSError):
         pass
-    # 等待进程结束并回收资源
+
     try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except Exception:
-        pass
+        await asyncio.wait_for(proc.communicate(), timeout=3)
+    except asyncio.TimeoutError:
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except Exception:
+            pass
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except Exception:
+            pass
+
+    await asyncio.sleep(0)
     if log_enabled:
         logger.info(f'[{label}] 进程已安全终止')
 
@@ -398,10 +418,30 @@ class PlayHandler(threading.Thread):
         if log_enabled:
             logger.info(f'开始处理，频道: {self.channel_id}')
         loop_t = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop_t)
-        loop_t.run_until_complete(self.main())
-        if log_enabled:
-            logger.info(f'处理完成，频道: {self.channel_id}')
+        try:
+            asyncio.set_event_loop(loop_t)
+            loop_t.run_until_complete(self.main())
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception('播放处理器异常退出，频道: %s', self.channel_id)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop_t)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop_t.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                loop_t.run_until_complete(loop_t.shutdown_asyncgens())
+                loop_t.run_until_complete(asyncio.sleep(0))
+            except Exception:
+                logger.exception('回收播放任务失败，频道: %s', self.channel_id)
+            asyncio.set_event_loop(None)
+            loop_t.close()
+            if log_enabled:
+                logger.info(f'处理完成，频道: {self.channel_id}')
 
     async def main(self):
         start_event = asyncio.Event()
@@ -410,18 +450,27 @@ class PlayHandler(threading.Thread):
         task3 = asyncio.create_task(self.stop(start_event))
 
         try:
-            done, pending = await asyncio.wait(
+            done, _ = await asyncio.wait(
                 [task1, task2],
                 return_when=asyncio.FIRST_COMPLETED
             )
+            for task in done:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    logger.error(
+                        '播放任务提前结束，频道=%s: %s',
+                        self.channel_id,
+                        error,
+                    )
         finally:
-            for task in pending:
-                task.cancel()
-            # 允许取消后的清理逻辑执行
-            await asyncio.sleep(0.1)
-
-        start_event.set()
-        await task3
+            for task in (task1, task2):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(task1, task2, return_exceptions=True)
+            start_event.set()
+            await task3
 
     async def stop(self, start_event):
         await start_event.wait()
@@ -862,12 +911,19 @@ class PlayHandler(threading.Thread):
         except Exception as e:
             if log_enabled:
                 logger.error(f'推流过程中出现错误: {str(e)}', exc_info=True)
+        finally:
             try:
-                await _safe_kill_subprocess(locals().get('p2'), "ffmpeg-decode-exc")
+                await _safe_kill_subprocess(
+                    locals().get('p2'),
+                    "ffmpeg-decode-final",
+                )
             except Exception:
                 pass
             try:
-                await _safe_kill_subprocess(locals().get('p'), "ffmpeg-encode-exc")
+                await _safe_kill_subprocess(
+                    locals().get('p'),
+                    "ffmpeg-encode-final",
+                )
             except Exception:
                 pass
 

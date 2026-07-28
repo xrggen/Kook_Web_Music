@@ -83,27 +83,50 @@ def _build_decoder_command(file, ss_value=0, is_bili=False, extra_command=''):
 
 
 async def _safe_kill_subprocess(proc, label="ffmpeg"):
-    """安全终止 asyncio 子进程：先关闭管道再 kill，防止 Windows ProactorEventLoop 管道泄漏"""
+    """在事件循环仍存活时终止子进程，并完整回收其异步管道。"""
     if proc is None:
         return
-    # 先关闭所有管道，防止 ProactorEventLoop 的 __del__ 报 closed pipe
-    for pipe in (proc.stdin, proc.stdout, proc.stderr):
-        if pipe is not None:
-            try:
-                pipe.close()
-            except Exception:
-                pass
-    # 再终止进程
+
+    # StreamReader 没有 close()；stdout/stderr 必须由 communicate() 排空，
+    # 否则 Windows 的 Proactor 管道 transport 可能延迟到 loop.close() 后析构。
+    stdin = getattr(proc, 'stdin', None)
+    if stdin is not None:
+        try:
+            stdin.close()
+            wait_closed = getattr(stdin, 'wait_closed', None)
+            if wait_closed is not None:
+                await asyncio.wait_for(wait_closed(), timeout=1)
+        except (BrokenPipeError, ConnectionResetError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            pass
+
     try:
         if proc.returncode is None:
             proc.kill()
-    except Exception:
+    except (ProcessLookupError, OSError):
         pass
-    # 等待进程结束并回收资源
+
     try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except Exception:
-        pass
+        await asyncio.wait_for(proc.communicate(), timeout=3)
+    except asyncio.TimeoutError:
+        try:
+            if proc.returncode is None:
+                proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except Exception:
+            pass
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except Exception:
+            pass
+
+    # 让 ProactorEventLoop 执行 pipe connection_lost 回调后再允许关闭循环。
+    await asyncio.sleep(0)
     if log_enabled:
         logger.info(f'[{label}] 进程已安全终止')
 
@@ -742,6 +765,16 @@ class PlayHandler(threading.Thread):
         finally:
             self._untrack_subprocess(proc)
 
+    async def _cleanup_tracked_subprocesses(self):
+        """在线程事件循环关闭前回收所有仍登记的媒体子进程。"""
+        with self._control_lock:
+            records = list(self._subprocesses.values())
+        for record in records:
+            await self._cleanup_subprocess(
+                record.get('proc'),
+                f"{record.get('label', 'ffmpeg')}-loop-final",
+            )
+
     def force_terminate_subprocesses(self):
         """跨线程终止当前 Handler 启动且仍存活的媒体子进程。"""
         with self._control_lock:
@@ -842,9 +875,15 @@ class PlayHandler(threading.Thread):
                         asyncio.gather(*pending, return_exceptions=True)
                     )
             except Exception:
-                pass
+                logger.exception('取消播放残留任务失败，频道: %s', self.channel_id)
+            try:
+                loop_t.run_until_complete(self._cleanup_tracked_subprocesses())
+                loop_t.run_until_complete(loop_t.shutdown_asyncgens())
+                loop_t.run_until_complete(asyncio.sleep(0))
+            except Exception:
+                logger.exception('回收媒体子进程失败，频道: %s', self.channel_id)
+            asyncio.set_event_loop(None)
             loop_t.close()
-            self.force_terminate_subprocesses()
             with self._control_lock:
                 self._loop = None
                 self._push_task = None
