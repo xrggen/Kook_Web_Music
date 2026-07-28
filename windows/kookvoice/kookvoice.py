@@ -89,10 +89,11 @@ play_list: Dict[str, Dict[str, Any]] = {}
 play_list_example = {'频道id':
                               {'token': '机器人token',
                                'guild_id': '服务器id',
-                               'voice_channel': '语音频道id',
-                               'text_channel': '最后一次执行指令的文字频道id',
-                               'repeat': False,
-                               'now_playing': {'file': '歌曲文件', 'ss': 0, 'start': 0,'extra':{}},
+                                'voice_channel': '语音频道id',
+                                'text_channel': '最后一次执行指令的文字频道id',
+                                'repeat': False,
+                                'playlist_repeat': False,
+                                'now_playing': {'file': '歌曲文件', 'ss': 0, 'start': 0,'extra':{}},
                                'play_list': [
                                    {'file': '路径', 'ss': 0}]}}
 
@@ -109,10 +110,46 @@ def _new_channel_state(channel_id: str, token: str, guild_id: str = "") -> Dict[
         'guild_id': str(guild_id),
         'voice_channel': channel_id,
         'repeat': False,
+        'playlist_repeat': False,
         '_queue_backup': None,
         '_stopping': False,
         'now_playing': None,
         'play_list': [],
+    }
+
+
+def _complete_current_track_locked(channel_id: str) -> Dict[str, Any]:
+    """完成当前歌曲并按循环模式重新排队；调用方必须持有 state_lock。"""
+    channel_state = play_list.get(str(channel_id))
+    if channel_state is None:
+        return {
+            'state': None,
+            'track': None,
+            'mode': None,
+            'queue_empty': True,
+        }
+
+    now_info = channel_state.get('now_playing')
+    channel_state['now_playing'] = None
+    mode = None
+
+    if now_info and isinstance(now_info, dict):
+        replay = copy.deepcopy(now_info)
+        replay['ss'] = 0
+        replay.pop('start', None)
+
+        if channel_state.get('repeat', False):
+            channel_state['play_list'].insert(0, replay)
+            mode = 'single'
+        elif channel_state.get('playlist_repeat', False):
+            channel_state['play_list'].append(replay)
+            mode = 'playlist'
+
+    return {
+        'state': channel_state,
+        'track': now_info,
+        'mode': mode,
+        'queue_empty': not channel_state['play_list'],
     }
 
 
@@ -474,11 +511,29 @@ class Player:
         with state_lock:
             if self.channel_id not in play_list:
                 raise ValueError('该频道没有正在播放的歌曲')
-            current = play_list[self.channel_id].get('repeat', False)
-            play_list[self.channel_id]['repeat'] = not current
+            state = play_list[self.channel_id]
+            current = state.get('repeat', False)
+            enabled = not current
+            state['repeat'] = enabled
+            if enabled:
+                state['playlist_repeat'] = False
         if log_enabled:
-            logger.info(f'单曲循环: {"开启" if not current else "关闭"}，频道: {self.channel_id}')
-        return not current
+            logger.info(f'单曲循环: {"开启" if enabled else "关闭"}，频道: {self.channel_id}')
+        return enabled
+
+    def playlist_repeat_toggle(self):
+        """切换列表循环；开启时自动关闭单曲循环。"""
+        with state_lock:
+            if self.channel_id not in play_list:
+                raise ValueError('该频道没有正在播放的歌曲')
+            state = play_list[self.channel_id]
+            enabled = not state.get('playlist_repeat', False)
+            state['playlist_repeat'] = enabled
+            if enabled:
+                state['repeat'] = False
+        if log_enabled:
+            logger.info(f'列表循环: {"开启" if enabled else "关闭"}，频道: {self.channel_id}')
+        return enabled
 
     def shuffle_toggle(self):
         """切换随机播放，返回 (enabled, count)"""
@@ -1417,31 +1472,18 @@ class PlayHandler(threading.Thread):
                                 "ffmpeg-decode-done",
                             )
 
-                            # 保存当前歌曲信息（用于单曲循环）
+                            # 完成当前歌曲，并根据单曲/列表循环模式重新入队
                             if self.should_stop():
                                 return
                             with state_lock:
                                 if _active_handlers.get(self.channel_id) is not self:
                                     return
-                                channel_state = play_list.get(self.channel_id)
-                                now_info = (
-                                    channel_state.get('now_playing')
-                                    if channel_state else None
+                                completion = _complete_current_track_locked(
+                                    self.channel_id
                                 )
-                                if channel_state:
-                                    channel_state['now_playing'] = None
-                                repeat_on = bool(
-                                    channel_state and channel_state.get('repeat', False)
-                                )
-                                if repeat_on and now_info and isinstance(now_info, dict):
-                                    replay = now_info.copy()
-                                    replay['ss'] = 0
-                                    replay.pop('start', None)
-                                    channel_state['play_list'].insert(0, replay)
-                                queue_empty = bool(
-                                    channel_state is None
-                                    or not channel_state['play_list']
-                                )
+                                channel_state = completion['state']
+                                cycle_mode = completion['mode']
+                                queue_empty = completion['queue_empty']
                                 if queue_empty:
                                     playlist_handle_status[self.channel_id] = False
                                 refill_view = (
@@ -1450,9 +1492,12 @@ class PlayHandler(threading.Thread):
                                     else {}
                                 )
 
-                            if repeat_on and now_info and isinstance(now_info, dict):
+                            if cycle_mode == 'single':
                                 if log_enabled:
                                     logger.info(f'单曲循环: 重新加入队列，频道: {self.channel_id}')
+                            elif cycle_mode == 'playlist':
+                                if log_enabled:
+                                    logger.info(f'列表循环: 当前歌曲移至队尾，频道: {self.channel_id}')
 
                             if queue_empty:
                                 if log_enabled:

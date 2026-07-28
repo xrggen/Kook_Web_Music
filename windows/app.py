@@ -527,9 +527,27 @@ async def repeat_cmd(msg: Message):
             return
         player = kookvoice.Player(ch)
         enabled = player.repeat_toggle()
-        await msg.reply(f"🔂 单曲循环已{'开启' if enabled else '关闭'}")
+        suffix = "（列表循环已关闭）" if enabled else ""
+        await msg.reply(f"🔂 单曲循环已{'开启' if enabled else '关闭'}{suffix}")
     except Exception as e:
         logger.error(f"[命令:单曲循环] 出错: {e}")
+        await msg.reply("⚠️ 操作失败，请稍后再试")
+
+@bot.command(name='循环播放列表')
+async def playlist_repeat_cmd(msg: Message):
+    """切换列表循环开关"""
+    try:
+        logger.info(f"[命令:循环播放列表] 用户={msg.author_id} 服务器={msg.ctx.guild.id}")
+        ch = await _resolve_channel(msg.ctx.guild.id, msg.author_id)
+        if not ch:
+            await msg.reply("❌ 当前没有正在播放的频道")
+            return
+        player = kookvoice.Player(ch)
+        enabled = player.playlist_repeat_toggle()
+        suffix = "（单曲循环已关闭）" if enabled else ""
+        await msg.reply(f"🔁 列表循环已{'开启' if enabled else '关闭'}{suffix}")
+    except Exception as e:
+        logger.error(f"[命令:循环播放列表] 出错: {e}")
         await msg.reply("⚠️ 操作失败，请稍后再试")
 
 @bot.command(name='随机播放')
@@ -1406,7 +1424,8 @@ async def help_cmd(msg: Message):
         "/暂停 — 暂停当前播放\n"
         "/继续 — 继续播放\n"
         "/跳过 — 跳过当前歌曲\n"
-        "/单曲循环 — 切换单曲循环开关\n"
+        "/单曲循环 — 循环当前歌曲（与列表循环互斥）\n"
+        "/循环播放列表 — 播完歌曲移到队尾并持续循环（与单曲循环互斥）\n"
         "/随机播放 — 切换随机播放开关\n"
         "/播放第N首 — 切到队列第N首歌\n"
         "/停止 — 停止播放\n"

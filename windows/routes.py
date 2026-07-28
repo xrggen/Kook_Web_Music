@@ -39,6 +39,15 @@ def _find_channel_for_guild(guild_id):
     return matches[0] if matches else None
 
 
+def _playback_modes_from_state(channel_state):
+    channel_state = channel_state or {}
+    return {
+        'single_repeat': bool(channel_state.get('repeat', False)),
+        'playlist_repeat': bool(channel_state.get('playlist_repeat', False)),
+        'shuffle': channel_state.get('_queue_backup') is not None,
+    }
+
+
 def register_routes(app, bot, socketio=None):
     """注册所有路由"""
     
@@ -242,8 +251,9 @@ def register_routes(app, bot, socketio=None):
             return jsonify({'success': False, 'error': str(e)})
 
     @app.route('/api/play', methods=['POST'])
+    @app.route('/api/playlist/add', methods=['POST'])
     def play_music():
-        """播放音乐"""
+        """将单曲添加到指定频道的播放列表（/api/play 保留兼容）"""
         data = request.json
         if not data:
             return jsonify({'success': False, 'error': '请求数据为空'})
@@ -281,7 +291,11 @@ def register_routes(app, bot, socketio=None):
                 extra['duration'] = bili_duration
             player.add_music(url, extra, guild_id)
 
-            return jsonify({'success': True})
+            return jsonify({
+                'success': True,
+                'channel_id': channel_id,
+                'message': '歌曲已添加到播放列表',
+            })
         except Exception as e:
             logger.error(f"播放音乐异常: {e}")
             return jsonify({'success': False, 'error': str(e)})
@@ -401,17 +415,51 @@ def register_routes(app, bot, socketio=None):
         channel_id = request.args.get('channel_id') or _find_channel_for_guild(guild_id)
 
         if not channel_id:
-            return jsonify({'success': True, 'playlist': []})
+            return jsonify({
+                'success': True,
+                'playlist': [],
+                'playback_modes': _playback_modes_from_state(None),
+            })
 
         try:
             channel_state = kookvoice.get_state_snapshot(channel_id)
             if channel_state is not None:
                 playlist_data = format_playlist_data(channel_state)
-                return jsonify({'success': True, 'playlist': playlist_data})
+                return jsonify({
+                    'success': True,
+                    'playlist': playlist_data,
+                    'playback_modes': _playback_modes_from_state(channel_state),
+                })
             else:
-                return jsonify({'success': True, 'playlist': []})
+                return jsonify({
+                    'success': True,
+                    'playlist': [],
+                    'playback_modes': _playback_modes_from_state(None),
+                })
         except Exception as e:
             logger.error(f"获取播放列表异常: {e}")
+            return jsonify({'success': False, 'error': str(e)})
+
+    @app.route('/api/playlist/repeat', methods=['POST'])
+    def toggle_playlist_repeat():
+        """切换指定频道的列表循环模式"""
+        data = request.get_json(silent=True) or {}
+        guild_id = data.get('guild_id')
+        channel_id = data.get('channel_id') or _find_channel_for_guild(guild_id)
+
+        if not channel_id:
+            return jsonify({'success': False, 'error': '缺少必要参数'})
+
+        try:
+            enabled = kookvoice.Player(channel_id).playlist_repeat_toggle()
+            channel_state = kookvoice.get_state_snapshot(channel_id)
+            return jsonify({
+                'success': True,
+                'enabled': enabled,
+                'playback_modes': _playback_modes_from_state(channel_state),
+            })
+        except Exception as e:
+            logger.error(f"切换列表循环异常: {e}")
             return jsonify({'success': False, 'error': str(e)})
     
     @app.route('/api/pause', methods=['POST'])

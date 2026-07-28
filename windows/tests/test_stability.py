@@ -122,6 +122,75 @@ class PlaybackStateTests(unittest.TestCase):
         live = kookvoice.get_state_snapshot("channel-3")
         self.assertEqual(live["play_list"][0]["extra"]["title"], "before")
 
+    def test_single_and_playlist_repeat_are_mutually_exclusive(self):
+        player = kookvoice.Player("repeat-modes", "token")
+        player.add_music("https://example.invalid/song.mp3")
+
+        self.assertTrue(player.playlist_repeat_toggle())
+        snapshot = kookvoice.get_state_snapshot("repeat-modes")
+        self.assertTrue(snapshot["playlist_repeat"])
+        self.assertFalse(snapshot["repeat"])
+
+        self.assertTrue(player.repeat_toggle())
+        snapshot = kookvoice.get_state_snapshot("repeat-modes")
+        self.assertTrue(snapshot["repeat"])
+        self.assertFalse(snapshot["playlist_repeat"])
+
+    def test_playlist_repeat_moves_completed_track_to_queue_tail(self):
+        state = kookvoice._new_channel_state(
+            "playlist-repeat",
+            "token",
+            "guild-1",
+        )
+        state["playlist_repeat"] = True
+        state["now_playing"] = {
+            "file": "https://example.invalid/current.mp3",
+            "ss": 42,
+            "start": 123.0,
+            "extra": {"title": "current"},
+        }
+        state["play_list"] = [
+            {
+                "file": "https://example.invalid/next.mp3",
+                "ss": 0,
+                "extra": {"title": "next"},
+            }
+        ]
+        with kookvoice.state_lock:
+            kookvoice.play_list["playlist-repeat"] = state
+            completion = kookvoice._complete_current_track_locked(
+                "playlist-repeat"
+            )
+
+        snapshot = kookvoice.get_state_snapshot("playlist-repeat")
+        self.assertEqual(completion["mode"], "playlist")
+        self.assertFalse(completion["queue_empty"])
+        self.assertIsNone(snapshot["now_playing"])
+        self.assertEqual(
+            [item["extra"]["title"] for item in snapshot["play_list"]],
+            ["next", "current"],
+        )
+        self.assertEqual(snapshot["play_list"][1]["ss"], 0)
+        self.assertNotIn("start", snapshot["play_list"][1])
+
+    def test_completed_track_is_not_requeued_when_loops_are_off(self):
+        state = kookvoice._new_channel_state("no-repeat", "token", "guild-1")
+        state["now_playing"] = {
+            "file": "https://example.invalid/current.mp3",
+            "ss": 0,
+            "extra": {},
+        }
+        with kookvoice.state_lock:
+            kookvoice.play_list["no-repeat"] = state
+            completion = kookvoice._complete_current_track_locked("no-repeat")
+
+        self.assertIsNone(completion["mode"])
+        self.assertTrue(completion["queue_empty"])
+        self.assertEqual(
+            kookvoice.get_state_snapshot("no-repeat")["play_list"],
+            [],
+        )
+
     def test_new_queue_waits_for_stopping_handler_cleanup(self):
         player = kookvoice.Player("channel-4", "token")
         player.join("guild-1")

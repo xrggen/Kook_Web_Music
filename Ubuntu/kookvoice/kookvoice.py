@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import os
 import shlex
 import threading
@@ -82,11 +83,48 @@ play_list_example = {'频道id':
                                'voice_channel': '语音频道id',
                                'text_channel': '最后一次执行指令的文字频道id',
                                'repeat': False,
+                               'playlist_repeat': False,
                                'now_playing': {'file': '歌曲文件', 'ss': 0, 'start': 0,'extra':{}},
                                'play_list': [
                                    {'file': '路径', 'ss': 0}]}}
 
 playlist_handle_status = {}
+
+
+def _complete_current_track(channel_id: str) -> Dict[str, Any]:
+    """完成当前歌曲并按循环模式重新排队。"""
+    channel_state = play_list.get(str(channel_id))
+    if channel_state is None:
+        return {
+            'state': None,
+            'track': None,
+            'mode': None,
+            'queue_empty': True,
+        }
+
+    now_info = channel_state.get('now_playing')
+    channel_state['now_playing'] = None
+    mode = None
+
+    if now_info and isinstance(now_info, dict):
+        replay = copy.deepcopy(now_info)
+        replay['ss'] = 0
+        replay.pop('start', None)
+
+        if channel_state.get('repeat', False):
+            channel_state['play_list'].insert(0, replay)
+            mode = 'single'
+        elif channel_state.get('playlist_repeat', False):
+            channel_state['play_list'].append(replay)
+            mode = 'playlist'
+
+    return {
+        'state': channel_state,
+        'track': now_info,
+        'mode': mode,
+        'queue_empty': not channel_state['play_list'],
+    }
+
 
 class Player:
     def __init__(self, channel_id, token=None):
@@ -113,10 +151,11 @@ class Player:
             raise ValueError('第一次启动推流时，你需要指定机器人token')
         if self.channel_id not in play_list:
             play_list[self.channel_id] = {'token': self.token,
-                                          'guild_id': str(guild_id),
-                                          'voice_channel': self.channel_id,
-                                          'repeat': False,
-                                          '_queue_backup': None,
+                                           'guild_id': str(guild_id),
+                                           'voice_channel': self.channel_id,
+                                           'repeat': False,
+                                           'playlist_repeat': False,
+                                           '_queue_backup': None,
                                           'now_playing': None,
                                           'play_list': []}
         guild_status[self.channel_id] = Status.WAIT
@@ -139,10 +178,11 @@ class Player:
         if self.channel_id not in play_list:
             need_start = True
             play_list[self.channel_id] = {'token': self.token,
-                                          'guild_id': '',
-                                          'voice_channel': self.channel_id,
-                                          'repeat': False,
-                                          '_queue_backup': None,
+                                           'guild_id': '',
+                                           'voice_channel': self.channel_id,
+                                           'repeat': False,
+                                           'playlist_repeat': False,
+                                           '_queue_backup': None,
                                           'now_playing': None,
                                           'play_list': []}
         # 检查是否是歌单歌曲标记，如果是则跳过文件存在检查
@@ -223,11 +263,28 @@ class Player:
         """切换单曲循环开关，返回切换后的状态"""
         if self.channel_id not in play_list:
             raise ValueError('该频道没有正在播放的歌曲')
-        current = play_list[self.channel_id].get('repeat', False)
-        play_list[self.channel_id]['repeat'] = not current
+        state = play_list[self.channel_id]
+        current = state.get('repeat', False)
+        enabled = not current
+        state['repeat'] = enabled
+        if enabled:
+            state['playlist_repeat'] = False
         if log_enabled:
-            logger.info(f'单曲循环: {"开启" if not current else "关闭"}，频道: {self.channel_id}')
-        return not current
+            logger.info(f'单曲循环: {"开启" if enabled else "关闭"}，频道: {self.channel_id}')
+        return enabled
+
+    def playlist_repeat_toggle(self):
+        """切换列表循环；开启时自动关闭单曲循环。"""
+        if self.channel_id not in play_list:
+            raise ValueError('该频道没有正在播放的歌曲')
+        state = play_list[self.channel_id]
+        enabled = not state.get('playlist_repeat', False)
+        state['playlist_repeat'] = enabled
+        if enabled:
+            state['repeat'] = False
+        if log_enabled:
+            logger.info(f'列表循环: {"开启" if enabled else "关闭"}，频道: {self.channel_id}')
+        return enabled
 
     def shuffle_toggle(self):
         """切换随机播放，返回 (enabled, count)"""
@@ -747,25 +804,15 @@ class PlayHandler(threading.Thread):
                                 logger.info(f'歌曲播放完成: {file}')
                             await _safe_kill_subprocess(p2, "ffmpeg-decode-done")
 
-                            # 保存当前歌曲信息（用于单曲循环）
-                            now_info = None
-                            if self.channel_id in play_list and play_list[self.channel_id]['now_playing']:
-                                now_info = play_list[self.channel_id]['now_playing']
-                                play_list[self.channel_id]['now_playing'] = None
+                            completion = _complete_current_track(self.channel_id)
+                            cycle_mode = completion['mode']
 
-                            # 单曲循环：将刚才播放的歌曲重新插入队列头部
-                            repeat_on = (self.channel_id in play_list
-                                         and play_list[self.channel_id].get('repeat', False))
-                            if repeat_on and now_info and isinstance(now_info, dict):
-                                replay = now_info.copy()
-                                replay['ss'] = 0
-                                replay.pop('start', None)
-                                if self.channel_id in play_list:
-                                    play_list[self.channel_id]['play_list'].insert(0, replay)
-                                if log_enabled:
-                                    logger.info(f'单曲循环: 重新加入队列，频道: {self.channel_id}')
+                            if cycle_mode == 'single' and log_enabled:
+                                logger.info(f'单曲循环: 重新加入队列，频道: {self.channel_id}')
+                            elif cycle_mode == 'playlist' and log_enabled:
+                                logger.info(f'列表循环: 当前歌曲移至队尾，频道: {self.channel_id}')
 
-                            if self.channel_id in play_list and len(play_list[self.channel_id]['play_list']) == 0:
+                            if completion['queue_empty']:
                                 await _safe_kill_subprocess(p2, "ffmpeg-decode")
                                 await _safe_kill_subprocess(p, "ffmpeg-encode")
                                 if self.channel_id in playlist_handle_status:
