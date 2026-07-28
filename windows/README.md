@@ -42,6 +42,13 @@
 - 端口清理通过 `psutil` 验证进程工作目录，只终止本项目的 Node API；启动/重启固定使用绝对 Python、`run.py`、Node/npm 和 `windows` 工作目录，`.env`、媒体工具和 Cookie 相对路径统一以 `windows` 为基准。
 - `tests/test_stability.py` 22 项加 `tests/test_watchdog.py` 12 项，共 34 项测试，覆盖播放并发与紧急恢复、单曲/列表循环互斥、歌曲完成后的循环入队、播放列表安全文本输出、媒体进程身份校验、QQ 分页，以及看门狗宽限、网关失联与兼容降级、故障复位、组件恢复、重启预算、替代进程和路径确定性。
 
+### V2.8 部署副本精简
+
+- Windows 发布目录仅保留 `ffmpeg/bin/ffmpeg.exe` 与 `ffprobe.exe`，不再保留根目录重复二进制、FFplay、开发头文件/库、测试音频、旧日志、缓存及可重新生成的构建产物。
+- 未被当前直连 Bilibili 实现引用的旧 `bilibili-api` 副本已移除；B站能力继续由 `bili_utils.py` 独立提供。
+- Windows 的 Node 依赖只供 Windows 版本使用，不得与 Ubuntu 的 `node_modules` 或 Python 虚拟环境共享。
+- 日志、心跳、缓存和临时媒体由运行时按需重建，不属于需要备份或部署的源文件。
+
 ---
 
 基于 Flask 的 KOOK 音乐机器人 Web 控制台。控制台采用“播放目标、搜索点歌、当前播放/频道队列”三栏工作台，支持把三平台搜索结果随时添加到指定语音频道的独立播放列表。

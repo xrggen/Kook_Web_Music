@@ -41,6 +41,13 @@
 - **可迁移部署**：启动和重启固定使用绝对 Python、`run.py`、Node/npm 与 `windows` 工作目录；显式加载 `windows/.env`。FFmpeg、ffprobe 与 Cookie 的相对配置一律相对于 `windows` 解析，无效的旧媒体工具路径会回退到随包二进制；运行日志统一写入可轮转的 `windows/debug.log`。
 - **验证**：`windows/tests/test_stability.py` 22 项加 `windows/tests/test_watchdog.py` 12 项，共 34 项测试，覆盖播放并发与停止竞态、单曲/列表循环互斥、歌曲完成后的循环入队、播放列表安全文本输出、紧急恢复、媒体进程身份校验、状态快照、QQ 分页，以及启动宽限、网关失联与兼容降级、连续故障复位、配置错误阻断、组件恢复、重启预算、替代进程和路径确定性。
 
+### V2.8 部署副本精简
+
+- 已移除不参与运行的重复 Windows 根目录 FFmpeg、FFplay/开发文档、测试音频、旧日志与缓存、覆盖率和文档构建产物，以及未被代码引用的旧 Bilibili API 副本。
+- Windows 仅使用 `windows/ffmpeg/bin` 中的媒体工具；Ubuntu 仅使用本机 `/usr/bin/ffmpeg` 与 `/usr/bin/ffprobe`，两个环境不会相互调用媒体二进制。
+- Ubuntu 的 `venv` 与两套 Node API 的 `node_modules` 都应在目标 Ubuntu 主机内重新安装。Windows 与 Ubuntu 不共享、复制或链接依赖目录，确保两套环境可独立部署。
+- 运行时日志、心跳、缓存和临时媒体均不属于发布源文件；清理后可由对应环境在运行时安全重建。
+
 ---
 
 一个功能完整的KOOK音乐机器人Web控制台，支持三大音乐平台（网易云 / QQ音乐 / B站）搜索与播放、歌单导入、远程控制、系统监控等功能。通过现代化Web界面管理KOOK服务器中的音乐播放，无需在聊天框输入命令。
