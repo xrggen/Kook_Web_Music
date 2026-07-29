@@ -20,8 +20,8 @@ pip install -r requirements.txt
 
 配置环境变量
 ```bash
-cp .env.example .env
-# 编辑.env文件，填写必要的配置信息
+python create_env.py
+# Token输入不会显示，SECRET_KEY会自动随机生成
 ```
 
 运行应用
@@ -37,6 +37,9 @@ python run.py
 - `FFMPEG_PATH`：FFmpeg可执行文件的路径
 - `MUSIC_API_BASE`：音乐API的基础URL
 - `SECRET_KEY`：Web应用的密钥
+
+`.env`、Cookie、会话和日志仅保存在本机，禁止加入Git。发布前在仓库
+根目录执行 `python scripts/check_secrets.py`。
 
 ## 技术栈
 

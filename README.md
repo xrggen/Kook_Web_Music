@@ -6,7 +6,7 @@
 
 | 版本 | 日期 | 类型 | 说明 |
 |------|------|------|------|
-| **V2.8** | 2026-07-28 | 功能增强 | 重构 Web 控制台为响应式三栏工作台，强化服务器与目标语音频道提示；新增三平台搜索结果“添加到播放列表”功能及 `/api/playlist/add` 接口；新增 `/循环播放列表` 指令、网页列表循环按钮及 `/api/playlist/repeat` 接口，歌曲播完后回到队尾，且与单曲循环互斥；修复 `/播放列表` 的 KOOK `40011`；修复 B站 HTTPS 音频因 FFmpeg 不兼容 `-timeout` 参数而无输出、机器人进频道后秒退的问题，改用 `-rw_timeout` 并记录解码错误；修复 FFmpeg 管道晚于线程事件循环回收导致的 `Event loop is closed` 退出告警；完善 `/帮助`、命令/API 文档与回归测试；以 Windows 为主线同步 Ubuntu 功能与页面资源 |
+| **V2.8** | 2026-07-28 | 功能增强 | 重构 Web 控制台为响应式三栏工作台，强化服务器与目标语音频道提示；新增三平台搜索结果“添加到播放列表”功能及 `/api/playlist/add` 接口；新增 `/循环播放列表` 指令、网页列表循环按钮及 `/api/playlist/repeat` 接口，歌曲播完后回到队尾，且与单曲循环互斥；修复 `/播放列表` 的 KOOK `40011`；修复 B站 HTTPS 音频因 FFmpeg 不兼容 `-timeout` 参数而无输出、机器人进频道后秒退的问题，改用 `-rw_timeout` 并记录解码错误；修复 FFmpeg 管道晚于线程事件循环回收导致的 `Event loop is closed` 退出告警；移除硬编码凭据与个人云地址，增加安全配置生成、发布前秘密扫描和 Git 历史脱敏；完善 `/帮助`、命令/API 文档与回归测试；以 Windows 为主线同步 Ubuntu 功能与页面资源 |
 | **V2.7.5** | 2026-07-26 | 稳定性修复 | 重构 Windows 看门狗：以进程内单调时钟分别监测 Bot 事件循环和 KOOK 网关活动，增加 180 秒启动宽限、Web/网易云/QQ API 探针与单组件恢复；连续故障才执行完整重启，15 分钟最多 3 次并递增退避；重启前复用 `/脱离卡死` 清理播放会话并回收 Node 进程树；Python、`run.py`、Node/npm、`.env`、FFmpeg/ffprobe 和 Cookie 路径全部确定化，原位重启失败时可拉起替代进程；新增 12 项看门狗测试，总计 30 项 |
 | **V2.7.4** | 2026-07-26 | 架构修复 | Windows 主线稳定性重构：同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁并提供只读快照；FFmpeg/ffprobe 子进程改为参数化启动、超时、身份校验与幂等回收；`/脱离卡死` 改为带频道栅栏的分阶段恢复；Bot/Web 心跳拆分并支持完整进程自愈；端口清理增加进程归属校验；应用工厂、日志轮转、前端频道状态及 QQ 歌单分页同步修复；新增 18 项稳定性测试 |
 | **V2.7.3** | 2026-06-17 | 修复 | `/qqgd` 修复他人歌单导入失败：改用 `u6.y.qq.com` 签名 API（移植 GoMusic 方案），无需 cookie 支持任意公开歌单，支持分页（>30首）；修复 KOOK Markdown 链接 `[url](url)` 导致歌单 ID 提取错误（`/wygd` `/qqgd` `/bili歌单`）；修复 `/停止` 后残留 STOP 状态阻止下次自动播放 |
@@ -212,9 +212,8 @@ cd qq-music-api
 npm install && npm run build
 cd ..
 
-# 5. 创建并编辑.env配置文件
+# 5. 安全创建.env配置文件（交互输入Token并自动生成随机密钥）
 python create_env.py
-# 编辑.env，填入BOT_TOKEN=你的Token
 
 # 6. 启动应用（自动拉起API → 端口3000/3200，Flask → 端口5000）
 python run.py
@@ -236,9 +235,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# 4. 配置环境变量
+# 4. 安全配置环境变量（交互输入Token并自动生成随机密钥）
 python3 create_env.py
-# 编辑.env文件，填入BOT_TOKEN
 
 # 5. 启动应用
 python run.py
@@ -276,7 +274,7 @@ python save_cookie.py "你的Cookie字符串"
 | `QQ_COOKIE_PATH` | QQ音乐Cookie文件路径 | `Cookie/qq_cookie.txt` |
 | `BILI_COOKIE_PATH` | B站Cookie文件路径 | `Cookie/bili_cookie.txt` |
 | `BACKUP_MUSIC_API` | 网易云备用API | `https://api.music.liuzhijin.cn` |
-| `SECRET_KEY` | Flask session密钥 | `change_this_to_a_random_string` |
+| `SECRET_KEY` | Flask session密钥 | `create_env.py` 自动生成随机值 |
 | `HOST` / `PORT` | Flask监听地址/端口 | `0.0.0.0` / `5000` |
 | `DEBUG` | 调试模式 | `False` |
 | `ALLOWGROUP` | 服务器ID白名单（逗号分隔） | 空（不限制） |
@@ -286,6 +284,9 @@ python save_cookie.py "你的Cookie字符串"
 | `WATCHDOG_STARTUP_GRACE` | 启动宽限秒数 | `180` |
 | `WATCHDOG_LOOP_TIMEOUT` / `WATCHDOG_GATEWAY_TIMEOUT` | Bot事件循环 / KOOK网关超时秒数 | `90` / `90` |
 | `WATCHDOG_INTERVAL` / `WATCHDOG_FAILURES` | 检查间隔 / 连续故障阈值 | `15` / `3` |
+
+凭据、Cookie、会话文件和日志禁止提交。发布前请执行
+`python scripts/check_secrets.py`，完整要求见 [SECURITY.md](SECURITY.md)。
 | `WATCHDOG_REPAIR_COOLDOWN` | 外部API单独恢复冷却秒数 | `60` |
 | `WATCHDOG_RESTART_WINDOW` / `WATCHDOG_MAX_RESTARTS` | 完整重启预算时间窗 / 次数 | `900` / `3` |
 

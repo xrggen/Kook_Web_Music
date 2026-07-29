@@ -126,8 +126,11 @@ except ImportError:
     socketio_available = False
 
 # 配置KOOK机器人
+# khl 在构造阶段要求非空字符串；占位值仅用于无凭据的导入、测试与配置
+# 错误提示，实际联网前仍由 BOT_TOKEN 的空值检查阻断。
+_BOT_CLIENT_TOKEN = BOT_TOKEN or "UNCONFIGURED_BOT_TOKEN"
 bot = Bot(
-    token=BOT_TOKEN,
+    token=_BOT_CLIENT_TOKEN,
     compress=True  # 启用压缩
 )
 
@@ -209,6 +212,9 @@ async def on_song_start(play_info: kookvoice.PlayInfo):
 
 # 强制验证Token有效性
 async def verify_token() -> bool:
+    if not BOT_TOKEN:
+        logger.error("未配置BOT_TOKEN，请先运行 create_env.py")
+        return False
     try:
         response = await bot.client.gate.request('GET', 'guild/list')
         if not isinstance(response, dict):

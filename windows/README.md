@@ -6,7 +6,7 @@
 
 | 版本 | 日期 | 类型 | 说明 |
 |------|------|------|------|
-| **V2.8** | 2026-07-28 | 功能增强 | Web 控制台重构为响应式三栏工作台，新增三平台搜索结果“添加到播放列表”入口和 `/api/playlist/add`；新增 `/循环播放列表` 指令、网页列表循环按钮及 `/api/playlist/repeat`，歌曲播完后回到队尾并与单曲循环互斥；修复 `/播放列表` 的 KOOK `40011`；修复 B站 HTTPS 音频因 FFmpeg 不兼容 `-timeout` 参数而无输出、机器人进频道后秒退的问题，改用 `-rw_timeout` 并记录解码错误；修复 FFmpeg 管道晚于线程事件循环回收导致的 `Event loop is closed` 退出告警；更新 `/帮助` 与文档，相关功能同步至 Ubuntu |
+| **V2.8** | 2026-07-28 | 功能增强 | Web 控制台重构为响应式三栏工作台，新增三平台搜索结果“添加到播放列表”入口和 `/api/playlist/add`；新增 `/循环播放列表` 指令、网页列表循环按钮及 `/api/playlist/repeat`，歌曲播完后回到队尾并与单曲循环互斥；修复 `/播放列表` 的 KOOK `40011`；修复 B站 HTTPS 音频因 FFmpeg 不兼容 `-timeout` 参数而无输出、机器人进频道后秒退的问题，改用 `-rw_timeout` 并记录解码错误；修复 FFmpeg 管道晚于线程事件循环回收导致的 `Event loop is closed` 退出告警；移除硬编码凭据与个人云地址，增加安全配置生成、发布前秘密扫描和 Git 历史脱敏；更新 `/帮助` 与文档，相关功能同步至 Ubuntu |
 | **V2.7.5** | 2026-07-26 | 稳定性修复 | 看门狗改为分别监测 Bot 事件循环、KOOK 网关、Web 与双 Node API；加入启动宽限、单组件恢复、连续故障判定、15 分钟最多 3 次的重启预算与退避；完整重启前清理播放会话和 Node 进程树；Python、`run.py`、Node/npm、`.env`、媒体工具及 Cookie 路径确定化；新增 12 项看门狗测试，总计 30 项 |
 | **V2.7.4** | 2026-07-26 | 架构修复 | 同一语音频道严格限制为单一 `PlayHandler`，修复重复加入、停止竞态及“进入后马上退出”；播放状态统一加锁和快照；FFmpeg/ffprobe 参数化启动、超时、身份校验与幂等回收；`/脱离卡死` 改为带频道栅栏的分阶段恢复；Bot/Web 双心跳及完整进程自愈；端口进程归属校验；应用工厂、轮转日志、前端频道状态与 QQ 歌单分页修复；新增 18 项稳定性测试 |
 | **V2.7.3** | 2026-06-15 | 功能增强 | 新增 `/cmd` 指令：在服务器执行 CMD 命令并返回输出（超时120秒、输出截断1900字符）；新增 `CMD_ALLOWUSER` 强管控（留空全员无权限，与全局白名单取交集） |
@@ -119,11 +119,8 @@ cd ..
 ### 2. 配置
 
 ```bash
-# 创建.env文件
+# 安全创建.env文件（交互输入Token并自动生成随机密钥）
 python create_env.py
-
-# 编辑.env，填入你的KOOK机器人Token
-# BOT_TOKEN=你的Token
 ```
 
 ### 3. 启动
@@ -194,7 +191,7 @@ python run.py
 | `BILI_COOKIE_PATH` | B站Cookie存储路径 | `./Cookie/bili_cookie.txt` |
 | `FFMPEG_PATH` | FFmpeg路径 | `./ffmpeg/bin/ffmpeg.exe` |
 | `FFPROBE_PATH` | FFprobe路径 | `./ffmpeg/bin/ffprobe.exe` |
-| `SECRET_KEY` | Flask密钥 | `change_this_to_a_random_string` |
+| `SECRET_KEY` | Flask密钥 | `create_env.py` 自动生成随机值 |
 | `HOST` | 监听地址 | `0.0.0.0` |
 | `PORT` | 监听端口 | `5000` |
 | `ALLOWGROUP` | 服务器ID白名单（逗号分隔） | 空（不限制） |
@@ -204,6 +201,9 @@ python run.py
 | `WATCHDOG_STARTUP_GRACE` | 启动宽限秒数 | `180` |
 | `WATCHDOG_LOOP_TIMEOUT` / `WATCHDOG_GATEWAY_TIMEOUT` | 事件循环 / KOOK网关超时秒数 | `90` / `90` |
 | `WATCHDOG_INTERVAL` / `WATCHDOG_FAILURES` | 检查间隔 / 连续故障阈值 | `15` / `3` |
+
+凭据、Cookie、会话文件和日志禁止提交。发布前请在仓库根目录执行
+`python scripts/check_secrets.py`，完整要求见根目录 `SECURITY.md`。
 | `WATCHDOG_REPAIR_COOLDOWN` | 外部API恢复冷却秒数 | `60` |
 | `WATCHDOG_RESTART_WINDOW` / `WATCHDOG_MAX_RESTARTS` | 重启预算时间窗 / 次数 | `900` / `3` |
 

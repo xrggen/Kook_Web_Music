@@ -6,13 +6,28 @@ venv/
 
 # Logs
 *.log
+*.log.*
 windows/log.txt
 Ubuntu/app.log
 Ubuntu/debug.log
 
 # Environment (secrets)
 .env
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Keys, credentials and local session stores
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.session
+*.session-journal
+*credentials*.json
+*secrets*.json
 
 # Node
 node_modules/
@@ -33,17 +48,14 @@ ffmpeg.exe.bac
 ffmpeg.bac/
 
 # Cookie files (contain secrets)
-**/Cookie/cookie.txt
-**/Cookie/cookies.json
-**/Cookie/qq_cookie.txt
-**/Cookie/bili_cookie.txt
-**/Cookie/qr.png
-**/Cookie/*.bac
+**/Cookie/*
+!**/Cookie/README.md
 
 # Runtime artifacts
 .heartbeat
 .bot_heartbeat
 .web_heartbeat
+*.pid
 
 # Claude Code
 .claude/

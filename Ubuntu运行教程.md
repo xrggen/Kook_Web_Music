@@ -108,15 +108,17 @@ FFPROBE_PATH=/usr/bin/ffprobe
 MUSIC_API_BASE=http://localhost:3000
 
 # Web控制台配置
-SECRET_KEY=change_this_to_a_random_string
+SECRET_KEY=请使用足够长的随机字符串
 HOST=0.0.0.0
 PORT=5000
-DEBUG=True
+DEBUG=False
 ```
 
 **重要提示：**
 - 将 `BOT_TOKEN` 替换为您的实际KOOK机器人Token
+- 使用脚本创建时，Token不会回显且`SECRET_KEY`会自动随机生成
 - FFMPEG路径在Ubuntu系统中通常是 `/usr/bin/ffmpeg`
+- `.env`、Cookie、会话和日志禁止提交到Git
 
 ### 9. 设置文件权限
 
@@ -203,11 +205,11 @@ http://你的服务器IP:5000
 | BOT_TOKEN | KOOK机器人的Token | 需要配置 |
 | FFMPEG_PATH | FFmpeg可执行文件路径 | /usr/bin/ffmpeg |
 | FFPROBE_PATH | FFprobe可执行文件路径 | /usr/bin/ffprobe |
-| MUSIC_API_BASE | 音乐API基础URL | 已配置 |
-| SECRET_KEY | Web应用密钥 | 可自定义 |
+| MUSIC_API_BASE | 音乐API基础URL | http://localhost:3000 |
+| SECRET_KEY | Web应用密钥 | 脚本自动生成随机值 |
 | HOST | 服务器监听地址 | 0.0.0.0 |
 | PORT | 服务器端口 | 5000 |
-| DEBUG | 调试模式 | True |
+| DEBUG | 调试模式 | False |
 
 ### 防火墙配置
 

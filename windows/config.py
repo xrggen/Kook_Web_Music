@@ -1,4 +1,5 @@
 import os
+import secrets
 
 # 基本配置
 DEBUG = False
@@ -6,7 +7,7 @@ HOST = "0.0.0.0"
 PORT = 5000
 
 # KOOK机器人配置
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token_here")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
 # Windows 版的相对路径统一相对于本文件所在目录解析，避免从快捷方式、
 # 计划任务或看门狗重启后因工作目录变化而指向错误位置。
@@ -62,4 +63,4 @@ ALLOWUSER   = set(filter(None, (x.strip() for x in os.environ.get("ALLOWUSER",  
 CMD_ALLOWUSER = set(filter(None, (x.strip() for x in os.environ.get("CMD_ALLOWUSER", "").split(","))))
 
 # Web控制台配置
-SECRET_KEY = os.environ.get("SECRET_KEY", "change_this_to_a_random_string")
+SECRET_KEY = os.environ.get("SECRET_KEY", "").strip() or secrets.token_urlsafe(48)
