@@ -1,5 +1,7 @@
 # KOOK音乐机器人 Web控制台
 
+> **项目基于原作者** [**@VexMare**](https://github.com/VexMare/Kook_Web_Music) **项目进行改进**
+
 > **当前版本**: V2.8 | **发布日期**: 2026-07-28
 
 ### 版本历史
