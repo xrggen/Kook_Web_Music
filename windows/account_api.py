@@ -3,7 +3,7 @@ import os
 import json
 import logging
 import requests
-from flask import jsonify, request
+from flask import jsonify, request, render_template
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +117,27 @@ def _api_post(path, data=None):
 
 
 def register_account_routes(app):
-    """注册账号管理相关路由"""
+    """注册账号管理与桌面应用页面路由"""
 
     @app.route("/account")
     def account_page():
         """账号管理页面"""
-        from flask import render_template
         return render_template("account.html")
+
+    @app.route("/library")
+    def library_page():
+        """跨平台音乐库页面"""
+        return render_template("library.html")
+
+    @app.route("/status")
+    def status_page():
+        """运行时健康状态页面"""
+        return render_template("status.html")
+
+    @app.route("/settings")
+    def settings_page():
+        """浏览器端界面设置页面"""
+        return render_template("settings.html")
 
     @app.route("/api/account/status")
     def account_status():
