@@ -3,6 +3,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     restoreLibraryImportIntent();
     bindDesktopPopoverBehavior();
+    bindQueuePromoteActions();
 });
 
 function restoreLibraryImportIntent() {
@@ -65,4 +66,147 @@ function bindDesktopPopoverBehavior() {
         if (guildSelector) guildSelector.open = false;
         if (playlistImport) playlistImport.open = false;
     });
+}
+
+function bindQueuePromoteActions() {
+    const playlistBody = document.getElementById('playlist-body');
+    if (!playlistBody) return;
+
+    installQueuePromoteStyles();
+
+    const decorate = () => {
+        const rows = Array.from(playlistBody.querySelectorAll('tr'));
+        rows.forEach((row, position) => {
+            if (row.querySelector('.empty-table-cell') || row.querySelector('.promote-btn')) {
+                return;
+            }
+
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 3) return;
+
+            const actionCell = cells[cells.length - 1];
+            actionCell.classList.add('queue-row-actions');
+
+            const songName = cells[1]?.querySelector('.track-primary')?.textContent?.trim()
+                || '这首歌曲';
+            const promoteButton = document.createElement('button');
+            promoteButton.type = 'button';
+            promoteButton.className = 'queue-inline-action promote-btn';
+            promoteButton.dataset.queueIndex = String(position);
+            promoteButton.title = position === 0 ? '已是下一首' : `将《${songName}》顶到下一首`;
+            promoteButton.setAttribute('aria-label', promoteButton.title);
+            promoteButton.disabled = position === 0;
+
+            const icon = document.createElement('i');
+            icon.className = position === 0
+                ? 'bi bi-pin-angle-fill'
+                : 'bi bi-arrow-up-circle';
+            icon.setAttribute('aria-hidden', 'true');
+            promoteButton.appendChild(icon);
+
+            promoteButton.addEventListener('click', () => {
+                promoteQueueItem(position, songName, promoteButton);
+            });
+
+            actionCell.prepend(promoteButton);
+        });
+    };
+
+    decorate();
+    const observer = new MutationObserver(decorate);
+    observer.observe(playlistBody, { childList: true });
+}
+
+async function promoteQueueItem(index, songName, button) {
+    if (index === 0 || !currentChannelId) return;
+
+    const targetChannelId = currentChannelId;
+    const targetGuildId = currentGuildId;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.replaceChildren();
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner-border spinner-border-sm';
+    spinner.setAttribute('aria-hidden', 'true');
+    button.appendChild(spinner);
+
+    try {
+        const data = await requestJSON('/api/playlist/promote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                guild_id: targetGuildId,
+                channel_id: targetChannelId,
+                index
+            })
+        });
+        if (!data.success) {
+            throw new Error(data.error || '顶歌失败');
+        }
+
+        if (data.already_top) {
+            showSuccess(`《${data.name || songName}》已经是下一首`);
+        } else {
+            showSuccess(`《${data.name || songName}》已顶到下一首`);
+        }
+
+        if (String(targetChannelId) === String(currentChannelId)) {
+            await loadPlaylist(targetChannelId);
+        }
+    } catch (error) {
+        showError(error.message);
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        button.replaceChildren();
+        const icon = document.createElement('i');
+        icon.className = 'bi bi-arrow-up-circle';
+        icon.setAttribute('aria-hidden', 'true');
+        button.appendChild(icon);
+    }
+}
+
+function installQueuePromoteStyles() {
+    if (document.getElementById('queue-promote-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'queue-promote-styles';
+    style.textContent = `
+        .queue-table tbody tr {
+            grid-template-columns: 36px minmax(0, 1fr) 68px;
+        }
+        .queue-row-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+        }
+        .queue-inline-action {
+            display: grid;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            place-items: center;
+            border: 1px solid var(--app-border);
+            border-radius: 50%;
+            color: #8b91d9;
+            background: transparent;
+            transition: color .14s ease, border-color .14s ease, background .14s ease;
+        }
+        .queue-inline-action:hover:not(:disabled) {
+            color: #c7c3ff;
+            border-color: rgba(116,103,244,.56);
+            background: rgba(116,103,244,.12);
+        }
+        .queue-inline-action:disabled {
+            cursor: default;
+            color: #575e68;
+            opacity: .72;
+        }
+        .queue-inline-action .spinner-border {
+            width: 12px;
+            height: 12px;
+            border-width: 1.5px;
+        }
+    `;
+    document.head.appendChild(style);
 }
