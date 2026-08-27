@@ -21,3 +21,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify Windows and Ubuntu stay aligned
         run: python scripts/check_platform_sync.py
+      - name: Compile Python sources
+        run: python -m compileall -q windows Ubuntu scripts
