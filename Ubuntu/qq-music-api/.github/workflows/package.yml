@@ -1,0 +1,78 @@
+name: Publish Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v1.0.0). Leave empty to use version from package.json'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # 用于 npm provenance
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || '' }}
+          fetch-tags: true
+
+      - name: Setup Node.js for NPM
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Determine version to publish
+        id: version
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "Using provided tag: ${{ inputs.tag }}"
+            echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            echo "No tag provided, using package.json version: v$VERSION"
+            echo "version=v$VERSION" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        run: npm install --no-package-lock
+
+      - name: Run tests
+        run: npm test
+        env:
+          CI: true
+
+      - name: Run linter
+        run: npm run eslint
+        continue-on-error: true # ESLint 错误不阻止发布，但会警告
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build documentation
+        run: npm run docs:build
+
+      - name: Generate CHANGELOG
+        run: npm run changelog
+
+      - name: Publish to NPM
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Publish to GitHub Packages
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}

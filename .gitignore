@@ -64,11 +64,8 @@ ffmpeg.bac/
 .DS_Store
 Thumbs.db
 
-# Netease Cloud Music API (large dependency, install via npm)
-NeteaseCloudMusicApi/
-
-# QQ Music API (large dependency, install via npm)
-qq-music-api/
+# Node API source is tracked; each API's nested .gitignore excludes
+# node_modules and generated/runtime files.
 
 # Bilibili API (if local copy)
 bilibili-api/
