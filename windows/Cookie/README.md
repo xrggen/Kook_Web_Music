@@ -1,12 +1,5 @@
-该目录用于保存网易云音乐登录后的 Cookie 文件。
-
-文件说明：
-- cookies.json: 保存完整 Cookie（JSON 格式）
-- cookie.txt: 纯文本格式，按 key=value; 拼接
-
-
-
-
-
-
-
+# QQ Music credential lifecycle
+#
+# qq_cookie.txt remains the compatibility source consumed by existing playback code.
+# qq_credential.json is generated automatically and stores refresh metadata for the same account.
+# Both files are ignored by Git and must never be committed.

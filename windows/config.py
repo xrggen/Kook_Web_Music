@@ -66,6 +66,9 @@ QQ_MUSIC_API_BASE = os.environ.get("QQ_MUSIC_API_BASE", "http://localhost:3200")
 QQ_COOKIE_TXT_PATH = _resolve_project_path(
     os.environ.get("QQ_COOKIE_PATH", os.path.join("Cookie", "qq_cookie.txt"))
 )
+QQ_CREDENTIAL_PATH = _resolve_project_path(
+    os.environ.get("QQ_CREDENTIAL_PATH", os.path.join("Cookie", "qq_credential.json"))
+)
 
 # B站配置
 BILI_COOKIE_TXT_PATH = _resolve_project_path(

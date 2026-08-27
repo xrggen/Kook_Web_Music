@@ -32,6 +32,7 @@ SHARED_FILES = (
     "kookvoice/kookvoice.py",
     "kookvoice/requestor.py",
     "qq_account_api.py",
+    "qq_credential.py",
     "qq_utils.py",
     "requirements.txt",
     "routes.py",
