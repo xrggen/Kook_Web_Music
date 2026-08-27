@@ -34,6 +34,13 @@ FFPROBE_PATH={ffprobe_path}
 MUSIC_API_BASE=http://localhost:3000
 QQ_MUSIC_API_BASE=http://localhost:3200
 QQ_COOKIE_PATH=./Cookie/qq_cookie.txt
+QQ_CREDENTIAL_PATH=./Cookie/qq_credential.json
+
+# QQ音乐登录态自动续期（秒）
+QQ_CREDENTIAL_CHECK_INTERVAL=10800
+QQ_CREDENTIAL_REFRESH_INTERVAL=64800
+QQ_CREDENTIAL_REFRESH_WINDOW=86400
+
 BILI_COOKIE_PATH=./Cookie/bili_cookie.txt
 
 # 权限白名单 — 留空表示不启用该维度过滤
