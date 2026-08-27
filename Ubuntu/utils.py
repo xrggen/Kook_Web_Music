@@ -2,7 +2,10 @@ import requests
 import logging
 import json
 import os
-from config import MUSIC_API_BASE, BACKUP_MUSIC_API
+try:
+    from .config import MUSIC_API_BASE, BACKUP_MUSIC_API
+except ImportError:
+    from config import MUSIC_API_BASE, BACKUP_MUSIC_API
 
 logger = logging.getLogger(__name__)
 
@@ -219,24 +222,44 @@ def resolve_marker_batch(markers, count=BATCH_SIZE):
     return resolved
 
 
-def refill_playlist_queue(channel_id, play_list_dict, count=BATCH_SIZE):
+def refill_playlist_queue(channel_id, play_list_dict, count=BATCH_SIZE, lock=None):
     """检查播放队列并将前 count 个 PLAYLIST_SONG 标记替换为真实URL"""
-    if channel_id not in play_list_dict:
-        return 0
-    queue = play_list_dict[channel_id].get('play_list', [])
-    markers = [item['file'] for item in queue if item.get('file', '').startswith('PLAYLIST_SONG:')]
+    def collect_markers():
+        state = play_list_dict.get(channel_id)
+        queue = state.get('play_list', []) if state else []
+        return [
+            item['file']
+            for item in queue
+            if item.get('file', '').startswith('PLAYLIST_SONG:')
+        ]
+
+    if lock is not None:
+        with lock:
+            markers = collect_markers()
+    else:
+        markers = collect_markers()
     if not markers:
         return 0
 
     resolved = resolve_marker_batch(markers, count)
-    replaced = 0
-    for item in queue:
-        marker = item.get('file', '')
-        if marker in resolved:
-            item['file'] = resolved[marker]
-            replaced += 1
-            if replaced >= count:
-                break
+    def apply_resolved():
+        state = play_list_dict.get(channel_id)
+        queue = state.get('play_list', []) if state else []
+        replaced = 0
+        for item in queue:
+            marker = item.get('file', '')
+            if marker in resolved:
+                item['file'] = resolved[marker]
+                replaced += 1
+                if replaced >= count:
+                    break
+        return replaced
+
+    if lock is not None:
+        with lock:
+            replaced = apply_resolved()
+    else:
+        replaced = apply_resolved()
     if replaced:
         logger.info(f"[批量取链] 已替换 {replaced} 个标记为真实URL")
     return replaced

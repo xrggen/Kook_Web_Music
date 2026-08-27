@@ -1,11 +1,18 @@
 import logging
 from flask import jsonify, request
 
-from bili_utils import (
-    load_bili_cookie, save_bili_cookie, clear_bili_cookie,
-    generate_bili_qr, poll_bili_qr, verify_bili_cookie,
-    get_bili_user_info, get_bili_favorite_collections,
-)
+try:
+    from .bili_utils import (
+        load_bili_cookie, save_bili_cookie, clear_bili_cookie,
+        generate_bili_qr, poll_bili_qr, verify_bili_cookie,
+        get_bili_user_info, get_bili_favorite_collections,
+    )
+except ImportError:
+    from bili_utils import (
+        load_bili_cookie, save_bili_cookie, clear_bili_cookie,
+        generate_bili_qr, poll_bili_qr, verify_bili_cookie,
+        get_bili_user_info, get_bili_favorite_collections,
+    )
 
 logger = logging.getLogger(__name__)
 

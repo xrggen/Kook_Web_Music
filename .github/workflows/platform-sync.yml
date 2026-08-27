@@ -1,0 +1,23 @@
+name: Platform Sync
+
+on:
+  push:
+    paths:
+      - 'windows/**'
+      - 'Ubuntu/**'
+      - 'scripts/check_platform_sync.py'
+      - '.github/workflows/platform-sync.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - 'Ubuntu/**'
+      - 'scripts/check_platform_sync.py'
+      - '.github/workflows/platform-sync.yml'
+
+jobs:
+  verify-shared-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows and Ubuntu stay aligned
+        run: python scripts/check_platform_sync.py

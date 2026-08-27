@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import shutil
+import sys
 from getpass import getpass
 from pathlib import Path
 from secrets import token_urlsafe
@@ -14,12 +16,19 @@ bot_token = getpass("请输入 KOOK Bot Token（输入不会显示）: ").strip(
 if not bot_token:
     raise SystemExit("❌ BOT_TOKEN 不能为空。")
 
+if sys.platform == "win32":
+    ffmpeg_path = "./ffmpeg/bin/ffmpeg.exe"
+    ffprobe_path = "./ffmpeg/bin/ffprobe.exe"
+else:
+    ffmpeg_path = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    ffprobe_path = shutil.which("ffprobe") or "/usr/bin/ffprobe"
+
 env_content = f"""# KOOK机器人配置
 BOT_TOKEN={bot_token}
 
-# FFMPEG配置 — 相对路径以 windows 目录为基准
-FFMPEG_PATH=./ffmpeg/bin/ffmpeg.exe
-FFPROBE_PATH=./ffmpeg/bin/ffprobe.exe
+# 媒体工具。Windows 默认使用随包 ffmpeg；Linux 默认使用系统 PATH。
+FFMPEG_PATH={ffmpeg_path}
+FFPROBE_PATH={ffprobe_path}
 
 # 本机音乐API配置
 MUSIC_API_BASE=http://localhost:3000

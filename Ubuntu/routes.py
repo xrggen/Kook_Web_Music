@@ -1,69 +1,37 @@
-from flask import render_template, request, jsonify, redirect, url_for, Blueprint
+from flask import render_template, request, jsonify, abort
 import logging
-import asyncio
-import json
 import os
 import time
 import subprocess
-import kookvoice
-from utils import search_music, get_music_url, get_playlist, get_playlist_urls, format_playlist_data
-from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist_urls, refill_qq_playlist_queue
-from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_all_tracks, refill_bili_playlist_queue
+try:
+    from . import kookvoice
+    from .config import BOT_TOKEN
+    from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, format_playlist_data, refill_playlist_queue
+    from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist_urls, refill_qq_playlist_queue
+    from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_all_tracks, refill_bili_playlist_queue
+except ImportError:
+    import kookvoice
+    from config import BOT_TOKEN
+    from utils import search_music, get_music_url, get_playlist, get_playlist_urls, format_playlist_data, refill_playlist_queue
+    from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist_urls, refill_qq_playlist_queue
+    from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_all_tracks, refill_bili_playlist_queue
 import threading
 
 logger = logging.getLogger(__name__)
+_RUNTIME_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
 
-# 全局变量
-guild_data = {}  # 存储服务器信息
-current_guild_id = None  # 当前选中的服务器ID
 
-# 异步函数运行器
-def run_async(coro):
-    """在Flask中运行异步函数"""
-    try:
-        # 创建新的事件循环在线程中运行
-        result = [None]
-        exception = [None]
-        
-        def run_in_thread():
-            try:
-                # 创建新的事件循环
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                
-                # 运行协程
-                result[0] = new_loop.run_until_complete(coro)
-            except Exception as e:
-                exception[0] = e
-            finally:
-                # 清理事件循环
-                try:
-                    new_loop.close()
-                except:
-                    pass
-        
-        # 在新线程中运行
-        thread = threading.Thread(target=run_in_thread)
-        thread.start()
-        thread.join(timeout=15)  # 15秒超时
-        
-        if thread.is_alive():
-            # 超时处理
-            logger.warning("异步函数执行超时")
-            return None
-            
-        if exception[0]:
-            raise exception[0]
-        return result[0]
-        
-    except Exception as e:
-        logger.error(f"运行异步函数异常: {e}")
-        return None
+def _resolve_log_path(log_type):
+    # 兼容旧前端的 app/debug 两种类型，二者都指向统一的运行日志。
+    return _RUNTIME_LOG_PATH if log_type in ('app', 'debug') else None
 
 def _find_channel_for_guild(guild_id):
     """同步查找服务器内的活跃语音频道。多频道时返回第一个但记录警告。"""
+    if guild_id is None:
+        return None
+    snapshot = kookvoice.get_state_snapshot()
     matches = []
-    for ch_id, data in kookvoice.play_list.items():
+    for ch_id, data in snapshot['play_list'].items():
         if data.get('guild_id') == str(guild_id):
             matches.append(ch_id)
     if len(matches) > 1:
@@ -96,6 +64,11 @@ def register_routes(app, bot, socketio=None):
     @app.route('/monitor')
     def monitor():
         """监控页面"""
+        template_root = app.template_folder or 'templates'
+        if not os.path.isabs(template_root):
+            template_root = os.path.join(app.root_path, template_root)
+        if not os.path.isfile(os.path.join(template_root, 'monitor.html')):
+            abort(404)
         return render_template('monitor.html')
     
     @app.route('/api/guilds', methods=['GET'])
@@ -105,7 +78,6 @@ def register_routes(app, bot, socketio=None):
             # 使用同步方式调用KOOK API获取服务器列表
             try:
                 import requests
-                from config import BOT_TOKEN
                 headers = {
                     'Authorization': f'Bot {BOT_TOKEN}',
                     'Content-Type': 'application/json'
@@ -158,7 +130,6 @@ def register_routes(app, bot, socketio=None):
             # 使用同步方式调用KOOK API获取频道列表
             try:
                 import requests
-                from config import BOT_TOKEN
                 headers = {
                     'Authorization': f'Bot {BOT_TOKEN}',
                     'Content-Type': 'application/json'
@@ -200,12 +171,13 @@ def register_routes(app, bot, socketio=None):
         guild_id = request.args.get('guild_id')
         if not guild_id:
             return jsonify({'success': False, 'error': '缺少guild_id参数'})
+        snapshot = kookvoice.get_state_snapshot()
         active = {}
-        for ch_id, data in kookvoice.play_list.items():
+        for ch_id, data in snapshot['play_list'].items():
             if data.get('guild_id') == str(guild_id):
                 status = 'idle'
-                if ch_id in kookvoice.guild_status:
-                    s = kookvoice.guild_status[ch_id]
+                if ch_id in snapshot['guild_status']:
+                    s = snapshot['guild_status'][ch_id]
                     if s == kookvoice.Status.PLAYING:
                         status = 'playing'
                     elif s == kookvoice.Status.PAUSE:
@@ -229,12 +201,8 @@ def register_routes(app, bot, socketio=None):
             return jsonify({'success': False, 'error': '缺少必要参数'})
         
         try:
-            from config import BOT_TOKEN
             player = kookvoice.Player(channel_id, BOT_TOKEN)
             player.join(guild_id)
-
-            global current_guild_id
-            current_guild_id = guild_id
 
             return jsonify({'success': True})
         except Exception as e:
@@ -316,13 +284,12 @@ def register_routes(app, bot, socketio=None):
             if not url:
                 return jsonify({'success': False, 'error': '无法获取音乐URL'})
 
-            from config import BOT_TOKEN
             player = kookvoice.Player(channel_id, BOT_TOKEN)
             extra = {'title': song_name, 'artist': artist_name}
             if platform == 'bili':
                 extra['platform'] = 'bili'
                 extra['duration'] = bili_duration
-            player.add_music(url, extra)
+            player.add_music(url, extra, guild_id)
 
             return jsonify({
                 'success': True,
@@ -345,11 +312,10 @@ def register_routes(app, bot, socketio=None):
         playlist_id = data.get('playlist_id')
         platform = data.get('platform', 'wy')
 
-        if not guild_id or not playlist_id:
+        if not guild_id or not channel_id or not playlist_id:
             return jsonify({'success': False, 'error': '缺少必要参数'})
 
         try:
-            from config import BOT_TOKEN
             player = kookvoice.Player(channel_id, BOT_TOKEN)
 
             if platform == 'qq':
@@ -361,8 +327,10 @@ def register_routes(app, bot, socketio=None):
                         'title': song['name'],
                         'artist': song['artist'],
                         '音乐名字': song['name'],
-                    })
-                prefetched = refill_qq_playlist_queue(channel_id, kookvoice.play_list)
+                    }, guild_id)
+                prefetched = refill_qq_playlist_queue(
+                    channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+                )
             elif platform == 'bili':
                 songs = get_bili_favorite_all_tracks(playlist_id)
                 if not songs:
@@ -373,8 +341,10 @@ def register_routes(app, bot, socketio=None):
                         'artist': song['artist'],
                         '音乐名字': song['name'],
                         'platform': 'bili',
-                    })
-                prefetched = refill_bili_playlist_queue(channel_id, kookvoice.play_list)
+                    }, guild_id)
+                prefetched = refill_bili_playlist_queue(
+                    channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+                )
             else:
                 songs = get_playlist_urls(playlist_id)
                 if not songs:
@@ -384,9 +354,10 @@ def register_routes(app, bot, socketio=None):
                         'title': song['name'],
                         'artist': song['artist'],
                         '音乐名字': song['name'],
-                    })
-                from utils import refill_playlist_queue
-                prefetched = refill_playlist_queue(channel_id, kookvoice.play_list)
+                    }, guild_id)
+                prefetched = refill_playlist_queue(
+                    channel_id, kookvoice.play_list, lock=kookvoice.state_lock
+                )
 
             logger.info(f"[歌单导入] platform={platform} {len(songs)}首 预取{prefetched}首")
             return jsonify({'success': True, 'count': len(songs)})
@@ -451,8 +422,8 @@ def register_routes(app, bot, socketio=None):
             })
 
         try:
-            if channel_id in kookvoice.play_list:
-                channel_state = kookvoice.play_list[channel_id]
+            channel_state = kookvoice.get_state_snapshot(channel_id)
+            if channel_state is not None:
                 playlist_data = format_playlist_data(channel_state)
                 return jsonify({
                     'success': True,
@@ -481,7 +452,7 @@ def register_routes(app, bot, socketio=None):
 
         try:
             enabled = kookvoice.Player(channel_id).playlist_repeat_toggle()
-            channel_state = kookvoice.play_list.get(channel_id)
+            channel_state = kookvoice.get_state_snapshot(channel_id)
             return jsonify({
                 'success': True,
                 'enabled': enabled,
@@ -568,10 +539,9 @@ def register_routes(app, bot, socketio=None):
             return jsonify({'success': False, 'error': '缺少必要参数'})
 
         try:
-            if channel_id in kookvoice.play_list:
-                kookvoice.play_list[channel_id]['play_list'] = []
-                return jsonify({'success': True})
-            else:
+            with kookvoice.state_lock:
+                if channel_id in kookvoice.play_list:
+                    kookvoice.play_list[channel_id]['play_list'] = []
                 return jsonify({'success': True})
         except Exception as e:
             logger.error(f"清空播放列表异常: {e}")
@@ -592,14 +562,13 @@ def register_routes(app, bot, socketio=None):
             return jsonify({'success': False, 'error': '缺少必要参数'})
 
         try:
-            if channel_id in kookvoice.play_list:
-                playlist = kookvoice.play_list[channel_id]['play_list']
-                if 0 <= int(index) < len(playlist):
-                    playlist.pop(int(index))
-                    return jsonify({'success': True})
-                else:
+            with kookvoice.state_lock:
+                if channel_id in kookvoice.play_list:
+                    playlist = kookvoice.play_list[channel_id]['play_list']
+                    if 0 <= int(index) < len(playlist):
+                        playlist.pop(int(index))
+                        return jsonify({'success': True})
                     return jsonify({'success': False, 'error': '索引超出范围'})
-            else:
                 return jsonify({'success': False, 'error': '播放列表不存在'})
         except Exception as e:
             logger.error(f"移除歌曲异常: {e}")
@@ -612,7 +581,7 @@ def register_routes(app, bot, socketio=None):
             import psutil
             import os as _os
 
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent = psutil.cpu_percent(interval=None)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
 
@@ -622,11 +591,13 @@ def register_routes(app, bot, socketio=None):
 
             network = psutil.net_io_counters()
 
-            active_guilds = len(kookvoice.play_list)
+            snapshot = kookvoice.get_state_snapshot()
+            playlists = snapshot['play_list']
+            active_guilds = len(playlists)
             playing_songs = 0
             queued_songs = 0
 
-            for gd in kookvoice.play_list.values():
+            for gd in playlists.values():
                 if gd.get('now_playing'):
                     playing_songs += 1
                 queued_songs += len(gd.get('play_list', []))
@@ -672,7 +643,7 @@ def register_routes(app, bot, socketio=None):
             lines = request.args.get('lines', 100, type=int)
             log_type = request.args.get('type', 'app', type=str)
 
-            log_file = 'app.log' if log_type == 'app' else ('debug.log' if log_type == 'debug' else None)
+            log_file = _resolve_log_path(log_type)
             if not log_file:
                 return jsonify({'success': False, 'error': '无效的日志类型'})
 
@@ -707,7 +678,7 @@ def register_routes(app, bot, socketio=None):
         """清空日志文件"""
         try:
             log_type = request.json.get('type', 'app') if request.json else 'app'
-            log_file = 'app.log' if log_type == 'app' else ('debug.log' if log_type == 'debug' else None)
+            log_file = _resolve_log_path(log_type)
             if not log_file:
                 return jsonify({'success': False, 'error': '无效的日志类型'})
             with open(log_file, 'w', encoding='utf-8') as f:
@@ -777,7 +748,7 @@ def register_routes(app, bot, socketio=None):
         """获取终端输出（增量）"""
         try:
             last_position = request.args.get('last_position', 0, type=int)
-            log_file = 'app.log'
+            log_file = _RUNTIME_LOG_PATH
             if os.path.exists(log_file):
                 file_size = os.path.getsize(log_file)
                 if file_size < last_position:

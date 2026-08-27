@@ -2,7 +2,10 @@ import requests
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+try:
+    from .config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+except ImportError:
+    from config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -230,15 +233,28 @@ def _qq_api_direct(disstid):
     无需 cookie，支持任意公开歌单，支持分页（>30首）。"""
     import json as _json, time as _time
 
-    def _fetch_page(song_begin, song_num):
+    try:
+        playlist_id = int(disstid)
+    except (TypeError, ValueError):
+        logger.warning("[QQ歌单直连] 非法歌单ID: %r", disstid)
+        return {}, []
+
+    def _fetch_page(song_begin, song_num, preferred_platform=None):
         """获取单页歌单数据，尝试多个 platform"""
-        for platform in ('-1', 'android', 'iphone', 'h5', 'wxfshare', 'iphone_wx'):
+        platforms = ['-1', 'android', 'iphone', 'h5', 'wxfshare', 'iphone_wx']
+        if preferred_platform in platforms:
+            platforms = [preferred_platform]
+        deadline = _time.monotonic() + 30
+        for platform in platforms:
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                break
             body = _json.dumps({
                 'req_0': {
                     'module': 'music.srfDissInfo.aiDissInfo',
                     'method': 'uniform_get_Dissinfo',
                     'param': {
-                        'disstid': int(disstid), 'enc_host_uin': '',
+                        'disstid': playlist_id, 'enc_host_uin': '',
                         'tag': 1, 'userinfo': 1,
                         'song_begin': song_begin, 'song_num': song_num,
                     }
@@ -251,35 +267,76 @@ def _qq_api_direct(disstid):
                 res = requests.post(url, data=body, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Content-Type': 'application/json',
-                }, timeout=30)
+                }, timeout=(min(3, remaining), min(8, remaining)))
                 # 108 字节 = 错误响应（GoMusic 经验值）
                 if len(res.content) == 108:
                     continue
                 data = res.json()
                 req0 = data.get('req_0', {})
                 if req0.get('code') == 0:
-                    return req0.get('data', {})
-            except Exception:
+                    return req0.get('data', {}), platform
+            except (requests.RequestException, ValueError):
                 continue
-        return None
+        return None, preferred_platform
 
     # 先拉第一页
-    data = _fetch_page(0, 30)
+    data, preferred_platform = _fetch_page(0, 30)
     if not data:
         return {}, []
 
     dirinfo = data.get('dirinfo', {})
     all_songs = list(data.get('songlist', []))
-    total = dirinfo.get('songnum', len(all_songs))
+    try:
+        reported_total = max(int(dirinfo.get('songnum', len(all_songs))), len(all_songs))
+    except (TypeError, ValueError):
+        reported_total = len(all_songs)
+    total = min(reported_total, 10000)
+    if total < reported_total:
+        logger.warning("[QQ歌单直连] 歌曲数 %d 超过安全上限，截断为 %d", reported_total, total)
 
     # 分页拉取剩余歌曲
-    while len(all_songs) < total:
-        page = _fetch_page(len(all_songs), 30)
+    seen_pages = set()
+    first_fingerprint = _json.dumps(
+        all_songs,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    seen_pages.add(first_fingerprint)
+    max_pages = max(1, (total + 29) // 30)
+    for _ in range(1, max_pages):
+        if len(all_songs) >= total:
+            break
+        page, preferred_platform = _fetch_page(
+            len(all_songs),
+            min(30, total - len(all_songs)),
+            preferred_platform,
+        )
         if not page:
             break
-        all_songs.extend(page.get('songlist', []))
+        page_songs = page.get('songlist', [])
+        if not page_songs:
+            logger.warning("[QQ歌单直连] 分页提前返回空列表，停止继续拉取")
+            break
+        fingerprint = _json.dumps(
+            page_songs,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(',', ':'),
+        )
+        if fingerprint in seen_pages:
+            logger.warning("[QQ歌单直连] 检测到重复分页，停止继续拉取")
+            break
+        seen_pages.add(fingerprint)
+        all_songs.extend(page_songs)
 
-    logger.info(f"[QQ歌单直连] 名称={dirinfo.get('title','?')} 歌曲数={len(all_songs)} total={total}")
+    all_songs = all_songs[:total]
+    logger.info(
+        "[QQ歌单直连] 名称=%s 歌曲数=%d total=%d",
+        dirinfo.get('title', '?'),
+        len(all_songs),
+        reported_total,
+    )
     return dirinfo, all_songs
 
 
@@ -382,24 +439,44 @@ def resolve_qq_marker_batch(markers, count=5):
     return resolved
 
 
-def refill_qq_playlist_queue(channel_id, play_list_dict, count=5):
+def refill_qq_playlist_queue(channel_id, play_list_dict, count=5, lock=None):
     """检查播放队列并将前 count 个 QQ_PLAYLIST_SONG 标记替换为真实URL"""
-    if channel_id not in play_list_dict:
-        return 0
-    queue = play_list_dict[channel_id].get("play_list", [])
-    markers = [item["file"] for item in queue if item.get("file", "").startswith("QQ_PLAYLIST_SONG:")]
+    def collect_markers():
+        state = play_list_dict.get(channel_id)
+        queue = state.get("play_list", []) if state else []
+        return [
+            item["file"]
+            for item in queue
+            if item.get("file", "").startswith("QQ_PLAYLIST_SONG:")
+        ]
+
+    if lock is not None:
+        with lock:
+            markers = collect_markers()
+    else:
+        markers = collect_markers()
     if not markers:
         return 0
 
     resolved = resolve_qq_marker_batch(markers, count)
-    replaced = 0
-    for item in queue:
-        marker = item.get("file", "")
-        if marker in resolved:
-            item["file"] = resolved[marker]
-            replaced += 1
-            if replaced >= count:
-                break
+    def apply_resolved():
+        state = play_list_dict.get(channel_id)
+        queue = state.get("play_list", []) if state else []
+        replaced = 0
+        for item in queue:
+            marker = item.get("file", "")
+            if marker in resolved:
+                item["file"] = resolved[marker]
+                replaced += 1
+                if replaced >= count:
+                    break
+        return replaced
+
+    if lock is not None:
+        with lock:
+            replaced = apply_resolved()
+    else:
+        replaced = apply_resolved()
     if replaced:
         logger.info(f"[QQ批量取链] 已替换 {replaced} 个标记为真实URL")
     return replaced
