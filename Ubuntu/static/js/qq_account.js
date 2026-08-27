@@ -50,17 +50,30 @@ class QQAccountManager {
         $('#qq-login-section').hide();
         $('#qq-account-section').show();
         $('#qq-uin-display').text(data.uin || '未知');
-        // 显示 Cookie 有效期
+
+        const expiry = $('#qq-expiry-display');
         const exp = data.expires_in;
+        let expiryText = '—';
         if (exp > 0) {
             const d = Math.floor(exp / 86400);
             const h = Math.floor((exp % 86400) / 3600);
-            $('#qq-expiry-display').text(d > 0 ? `${d}天${h}小时` : `${h}小时`).removeClass('text-danger').addClass('text-success');
+            expiryText = d > 0 ? `${d}天${h}小时` : `${h}小时`;
+            expiry.removeClass('text-danger text-warning').addClass('text-success');
         } else if (exp === 0) {
-            $('#qq-expiry-display').text('已过期').removeClass('text-success').addClass('text-danger');
+            expiryText = '已过期';
+            expiry.removeClass('text-success text-warning').addClass('text-danger');
         } else {
-            $('#qq-expiry-display').text('—');
+            expiry.removeClass('text-danger text-warning').addClass('text-success');
         }
+
+        if (data.refresh_supported) {
+            expiryText += ' · 自动续期';
+        } else if (data.logged_in) {
+            expiryText += ' · 自动检查';
+        }
+        expiry.text(expiryText);
+        expiry.attr('title', data.message || '');
+
         this.loadProfile();
         this.loadPlaylists();
     }
@@ -157,7 +170,7 @@ class QQAccountManager {
                 clearInterval(this.qrTimer);
                 this.qrTimer = null;
                 $('#qq-qr-status').text('登录成功!');
-                this.showToast('QQ音乐登录成功', 'success');
+                this.showToast('QQ音乐登录成功，自动续期已启用', 'success');
                 setTimeout(() => this.checkLoginStatus(), 1000);
             } else if (data.status === 'scanned') {
                 $('#qq-qr-status').text('已扫码，请在手机上确认授权');
@@ -187,8 +200,9 @@ class QQAccountManager {
             });
             const data = await resp.json();
             if (data.code === 200) {
-                $('#qq-cookie-save-msg').html('<span class="text-success">Cookie已保存</span>');
-                this.showToast('QQ音乐Cookie已保存', 'success');
+                const renewalText = data.refresh_supported ? '，自动续期已启用' : '';
+                $('#qq-cookie-save-msg').html(`<span class="text-success">Cookie已保存${renewalText}</span>`);
+                this.showToast(`QQ音乐Cookie已保存${renewalText}`, 'success');
                 this.checkLoginStatus();
             } else {
                 $('#qq-cookie-save-msg').html('<span class="text-danger">' + (data.error || '保存失败') + '</span>');
