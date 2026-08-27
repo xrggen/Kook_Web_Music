@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设置 - KOOK Music</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/app.css', v='1.0') }}" rel="stylesheet">
+</head>
+<body class="app-page settings-page">
+    <div class="music-app-shell">
+        {% set active_page = 'settings' %}
+        {% set sidebar_title = '设置' %}
+        {% set sidebar_icon = 'bi-gear-fill' %}
+        {% include '_app_sidebar.html' %}
+
+        <main class="app-stage app-page-stage">
+            <header class="page-topbar">
+                <div class="page-topbar-copy">
+                    <small>KOOK MUSIC / SETTINGS</small>
+                    <strong>界面与本地偏好</strong>
+                </div>
+                <div class="page-topbar-actions">
+                    <a class="app-header-button primary" href="/dashboard">
+                        <i class="bi bi-play-fill"></i><span>返回播放</span>
+                    </a>
+                </div>
+            </header>
+
+            <section class="page-heading">
+                <div class="page-heading-copy">
+                    <span class="page-eyebrow">PREFERENCES</span>
+                    <h1>设置</h1>
+                    <p>本页只管理浏览器端界面偏好，不修改 Bot Token、音乐平台 Cookie、监听地址或其他服务端配置。</p>
+                </div>
+                <div class="page-heading-meta">
+                    <span class="page-chip"><span class="dot"></span> 本地保存</span>
+                </div>
+            </section>
+
+            <div class="page-content settings-layout">
+                <div class="settings-stack">
+                    <section class="surface-panel">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">INTERFACE</span><h2>界面体验</h2><p>这些偏好会保存在当前浏览器的 localStorage 中。</p></div>
+                        </div>
+                        <div class="surface-body">
+                            <div class="setting-row">
+                                <div class="setting-copy">
+                                    <strong>紧凑布局</strong>
+                                    <span>减少面板和列表的垂直间距，更适合 1080p 屏幕同时展示更多队列与歌单。</span>
+                                </div>
+                                <label class="switch-control" aria-label="紧凑布局">
+                                    <input type="checkbox" id="density-toggle">
+                                    <span aria-hidden="true"></span>
+                                </label>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-copy">
+                                    <strong>减少动画</strong>
+                                    <span>关闭大部分过渡与位移动效，在远程桌面或低性能环境下减少无意义的视觉开销。</span>
+                                </div>
+                                <label class="switch-control" aria-label="减少动画">
+                                    <input type="checkbox" id="motion-toggle">
+                                    <span aria-hidden="true"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="surface-panel">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">LAYOUT ROADMAP</span><h2>布局策略</h2><p>本轮实现以桌面浏览器作为第一优先级。</p></div>
+                        </div>
+                        <div class="surface-body">
+                            <div class="setting-row">
+                                <div class="setting-copy">
+                                    <strong>桌面布局</strong>
+                                    <span>当前主要针对 1920×1080、1440×900 以及接近尺寸的桌面窗口进行设计。</span>
+                                </div>
+                                <span class="status-pill ok">当前实现</span>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-copy">
+                                    <strong>移动端适配</strong>
+                                    <span>已预留页面结构和响应式边界，但本轮不实现完整移动端交互与底部导航。</span>
+                                </div>
+                                <span class="status-pill warn">后续版本</span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <aside class="settings-stack">
+                    <section class="surface-panel">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">SERVER CONFIG</span><h2>服务端配置</h2></div>
+                        </div>
+                        <div class="surface-body">
+                            <div class="settings-note">
+                                <strong>仍由 .env 管理</strong><br>
+                                Bot Token、HOST、PORT、FFmpeg 路径和平台 API 等运行参数继续使用现有配置文件。为了避免网页误改运行环境，本次 UI 重构没有增加 Web 写配置接口。
+                            </div>
+                            <div class="settings-note" style="margin-top: 10px;">
+                                <strong>账号凭据独立管理</strong><br>
+                                网易云、QQ 音乐和 Bilibili 的登录状态与 Cookie 请前往“音乐账号”页面管理。
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="surface-panel settings-danger">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">RESET</span><h2>重置界面偏好</h2></div>
+                        </div>
+                        <div class="surface-body">
+                            <p class="muted-copy" style="font-size:.68rem;line-height:1.6;margin-top:0;">只会清除紧凑布局与动画偏好，不会影响音乐账号、播放队列或服务端配置。</p>
+                            <button class="app-header-button" type="button" id="settings-reset-btn">
+                                <i class="bi bi-arrow-counterclockwise"></i><span>恢复默认界面设置</span>
+                            </button>
+                            <div id="settings-message" class="muted-copy" style="margin-top:10px;font-size:.64rem;"></div>
+                        </div>
+                    </section>
+                </aside>
+            </div>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app-ui.js', v='1.0') }}"></script>
+    <script src="{{ url_for('static', filename='js/settings.js', v='1.0') }}"></script>
+</body>
+</html>

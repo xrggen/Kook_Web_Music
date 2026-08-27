@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>音乐库 - KOOK Music</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/app.css', v='1.0') }}" rel="stylesheet">
+</head>
+<body class="app-page library-page">
+    <div class="music-app-shell">
+        {% set active_page = 'library' %}
+        {% set sidebar_title = '音乐库' %}
+        {% set sidebar_icon = 'bi-music-note-list' %}
+        {% include '_app_sidebar.html' %}
+
+        <main class="app-stage app-page-stage">
+            <header class="page-topbar">
+                <div class="page-topbar-copy">
+                    <small>KOOK MUSIC / LIBRARY</small>
+                    <strong>跨平台音乐资源</strong>
+                </div>
+                <div class="page-topbar-actions">
+                    <button class="app-header-button" type="button" id="library-refresh-btn">
+                        <i class="bi bi-arrow-clockwise"></i><span>刷新音乐库</span>
+                    </button>
+                    <a class="app-header-button primary" href="/dashboard">
+                        <i class="bi bi-play-fill"></i><span>返回播放</span>
+                    </a>
+                </div>
+            </header>
+
+            <section class="page-heading">
+                <div class="page-heading-copy">
+                    <span class="page-eyebrow">YOUR MUSIC</span>
+                    <h1>音乐库</h1>
+                    <p>把网易云、QQ 音乐和 Bilibili 收藏夹统一放在一个入口。这里负责浏览与选择内容，实际导入和播放仍由播放页的频道会话完成。</p>
+                </div>
+                <div class="page-heading-meta">
+                    <span class="page-chip"><span class="dot"></span> 三平台统一视图</span>
+                </div>
+            </section>
+
+            <div class="page-content">
+                <section class="library-platform-grid" aria-label="平台连接状态">
+                    <article class="surface-panel library-platform-card">
+                        <span class="platform-brand netease"><i class="bi bi-music-note"></i></span>
+                        <div><small>NETEASE CLOUD MUSIC</small><strong id="library-wy-name">网易云音乐</strong></div>
+                        <span class="library-platform-status" id="library-wy-status">检测中</span>
+                    </article>
+                    <article class="surface-panel library-platform-card">
+                        <span class="platform-brand qq"><i class="bi bi-music-note-beamed"></i></span>
+                        <div><small>QQ MUSIC</small><strong id="library-qq-name">QQ 音乐</strong></div>
+                        <span class="library-platform-status" id="library-qq-status">检测中</span>
+                    </article>
+                    <article class="surface-panel library-platform-card">
+                        <span class="platform-brand bili"><i class="bi bi-play-btn"></i></span>
+                        <div><small>BILIBILI</small><strong id="library-bili-name">Bilibili</strong></div>
+                        <span class="library-platform-status" id="library-bili-status">检测中</span>
+                    </article>
+                </section>
+
+                <section class="surface-panel">
+                    <div class="surface-heading">
+                        <div>
+                            <span class="page-eyebrow">COLLECTIONS</span>
+                            <h2>我的歌单与收藏夹</h2>
+                            <p id="library-summary">正在读取已连接平台…</p>
+                        </div>
+                        <a class="app-header-button" href="/account"><i class="bi bi-person-gear"></i><span>管理音乐账号</span></a>
+                    </div>
+                    <div class="surface-body">
+                        <div class="library-toolbar">
+                            <div class="library-filter" id="library-filter" role="group" aria-label="音乐库筛选">
+                                <button class="active" type="button" data-platform="all">全部</button>
+                                <button type="button" data-platform="wy">网易云</button>
+                                <button type="button" data-platform="qq">QQ 音乐</button>
+                                <button type="button" data-platform="bili">Bilibili</button>
+                            </div>
+                            <span class="muted-copy" id="library-count">0 个收藏</span>
+                        </div>
+                        <div class="library-grid" id="library-grid" aria-live="polite">
+                            <div class="library-empty">
+                                <i class="bi bi-arrow-repeat"></i>
+                                <strong>正在加载音乐库</strong>
+                                <p>会同时检查三个平台的账号连接状态，并读取可用歌单或收藏夹。</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app-ui.js', v='1.0') }}"></script>
+    <script src="{{ url_for('static', filename='js/library.js', v='1.0') }}"></script>
+</body>
+</html>
