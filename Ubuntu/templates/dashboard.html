@@ -24,11 +24,11 @@
                     <i class="bi bi-play-circle-fill"></i>
                     <span>播放</span>
                 </a>
-                <a class="app-nav-item" href="#music-search-container">
+                <span class="app-nav-item" aria-disabled="true" title="音乐库将在后续版本接入">
                     <i class="bi bi-music-note-list"></i>
                     <span>音乐库</span>
                     <small>预留</small>
-                </a>
+                </span>
                 <a class="app-nav-item" href="/account">
                     <i class="bi bi-person-fill"></i>
                     <span>音乐账号</span>
@@ -50,8 +50,8 @@
             <div class="sidebar-session-card">
                 <span class="session-icon" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
                 <div>
-                    <small>播放控制</small>
-                    <strong>实时频道会话</strong>
+                    <small>当前播放目标</small>
+                    <strong id="target-summary">请选择服务器与语音频道</strong>
                 </div>
                 <span class="signal-bars" aria-label="服务在线"><i></i><i></i><i></i></span>
             </div>
@@ -64,8 +64,8 @@
                         <summary>
                             <span class="context-icon"><i class="bi bi-grid-fill"></i></span>
                             <span class="context-copy">
-                                <small>服务器 / 频道</small>
-                                <strong id="target-summary">请选择播放目标</strong>
+                                <small>服务器</small>
+                                <strong id="server-name">选择 KOOK 服务器</strong>
                             </span>
                             <i class="bi bi-chevron-down selector-chevron"></i>
                         </summary>
@@ -89,11 +89,10 @@
                     </details>
 
                     <section class="channel-context" id="server-info-container" hidden>
-                        <span class="context-server-name" id="server-name">—</span>
-                        <label class="visually-hidden" for="voice-channel-select">语音频道</label>
                         <div class="channel-select-wrap">
                             <i class="bi bi-headphones"></i>
-                            <select class="form-select" id="voice-channel-select">
+                            <label class="visually-hidden" for="voice-channel-select">语音频道</label>
+                            <select class="form-select" id="voice-channel-select" aria-label="语音频道">
                                 <option value="">选择语音频道</option>
                             </select>
                         </div>
@@ -109,9 +108,9 @@
                 </div>
 
                 <div class="topbar-actions">
-                    <span class="bot-status">
+                    <span class="bot-status" title="绿色表示已选择可控制的频道">
                         <span class="target-status-dot" id="target-status-dot"></span>
-                        <span>Bot Online</span>
+                        <span>控制目标</span>
                     </span>
                     <a class="profile-button" href="/account" title="音乐账号" aria-label="音乐账号">
                         <i class="bi bi-person-fill"></i>
