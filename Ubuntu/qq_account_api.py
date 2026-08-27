@@ -4,7 +4,10 @@ import logging
 import requests
 from flask import jsonify, request
 
-from config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+try:
+    from .config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+except ImportError:
+    from config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
 
 logger = logging.getLogger(__name__)
 
