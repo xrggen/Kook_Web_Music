@@ -1,0 +1,55 @@
+<aside class="app-sidebar" aria-label="主导航">
+    <a class="app-brand" href="/dashboard" aria-label="KOOK Music 播放控制台">
+        <span class="brand-mark" aria-hidden="true">
+            <i class="bi bi-soundwave"></i>
+        </span>
+        <span>KOOK Music</span>
+    </a>
+
+    <nav class="app-nav">
+        <a class="app-nav-item{% if active_page == 'play' %} active{% endif %}" href="/dashboard"{% if active_page == 'play' %} aria-current="page"{% endif %}>
+            <i class="bi bi-play-circle-fill"></i>
+            <span>播放</span>
+        </a>
+        <a class="app-nav-item{% if active_page == 'library' %} active{% endif %}" href="/library"{% if active_page == 'library' %} aria-current="page"{% endif %}>
+            <i class="bi bi-music-note-list"></i>
+            <span>音乐库</span>
+        </a>
+        <a class="app-nav-item{% if active_page == 'account' %} active{% endif %}" href="/account"{% if active_page == 'account' %} aria-current="page"{% endif %}>
+            <i class="bi bi-person-fill"></i>
+            <span>音乐账号</span>
+        </a>
+
+        <span class="nav-separator" aria-hidden="true"></span>
+
+        <a class="app-nav-item{% if active_page == 'status' %} active{% endif %}" href="/status"{% if active_page == 'status' %} aria-current="page"{% endif %}>
+            <i class="bi bi-hdd-rack-fill"></i>
+            <span>系统状态</span>
+            <span class="nav-status-dot" id="sidebar-health-dot" aria-hidden="true"></span>
+        </a>
+        <a class="app-nav-item{% if active_page == 'settings' %} active{% endif %}" href="/settings"{% if active_page == 'settings' %} aria-current="page"{% endif %}>
+            <i class="bi bi-gear-fill"></i>
+            <span>设置</span>
+        </a>
+    </nav>
+
+    {% if active_page == 'play' %}
+    <div class="sidebar-session-card">
+        <span class="session-icon" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
+        <div>
+            <small>当前播放目标</small>
+            <strong id="target-summary">请选择服务器与语音频道</strong>
+        </div>
+        <span class="signal-bars" aria-label="播放控制"><i></i><i></i><i></i></span>
+    </div>
+    {% else %}
+    <div class="sidebar-session-card sidebar-page-card">
+        <span class="session-icon" aria-hidden="true"><i class="bi {{ sidebar_icon|default('bi-grid-fill') }}"></i></span>
+        <div>
+            <small>当前页面</small>
+            <strong>{{ sidebar_title|default('KOOK Music') }}</strong>
+        </div>
+        <span class="page-indicator" aria-hidden="true"></span>
+    </div>
+    {% endif %}
+</aside>
