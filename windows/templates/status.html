@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统状态 - KOOK Music</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/app.css', v='1.0') }}" rel="stylesheet">
+</head>
+<body class="app-page status-page">
+    <div class="music-app-shell">
+        {% set active_page = 'status' %}
+        {% set sidebar_title = '系统状态' %}
+        {% set sidebar_icon = 'bi-hdd-rack-fill' %}
+        {% include '_app_sidebar.html' %}
+
+        <main class="app-stage app-page-stage">
+            <header class="page-topbar">
+                <div class="page-topbar-copy">
+                    <small>KOOK MUSIC / RUNTIME</small>
+                    <strong>运行时健康状态</strong>
+                </div>
+                <div class="page-topbar-actions">
+                    <button class="app-header-button" type="button" id="status-refresh-btn">
+                        <i class="bi bi-arrow-clockwise"></i><span>立即刷新</span>
+                    </button>
+                    <a class="app-header-button primary" href="/dashboard">
+                        <i class="bi bi-play-fill"></i><span>返回播放</span>
+                    </a>
+                </div>
+            </header>
+
+            <section class="page-heading">
+                <div class="page-heading-copy">
+                    <span class="page-eyebrow">SYSTEM HEALTH</span>
+                    <h1>系统状态</h1>
+                    <p>只展示运行时健康和播放会话摘要，不暴露调试日志或终端能力。页面会定时刷新 Bot、网关、FFmpeg 与当前播放负载。</p>
+                </div>
+                <div class="page-heading-meta">
+                    <span class="page-chip"><span class="dot"></span> 5 秒自动刷新</span>
+                </div>
+            </section>
+
+            <div class="page-content">
+                <section class="surface-panel health-hero">
+                    <div class="health-hero-copy">
+                        <span class="health-orb" id="health-orb"><i class="bi bi-activity"></i></span>
+                        <div>
+                            <strong id="health-title">正在检查运行状态</strong>
+                            <span id="health-copy">等待运行时健康数据…</span>
+                        </div>
+                    </div>
+                    <span class="health-refresh" id="health-refreshed-at">尚未刷新</span>
+                </section>
+
+                <section class="health-metric-grid" aria-label="关键运行指标">
+                    <article class="surface-panel health-card">
+                        <span class="health-card-icon"><i class="bi bi-broadcast"></i></span>
+                        <strong id="metric-active-channels">—</strong>
+                        <span>活跃频道会话</span>
+                    </article>
+                    <article class="surface-panel health-card">
+                        <span class="health-card-icon"><i class="bi bi-play-circle"></i></span>
+                        <strong id="metric-playing">—</strong>
+                        <span>正在播放</span>
+                    </article>
+                    <article class="surface-panel health-card">
+                        <span class="health-card-icon"><i class="bi bi-list-ol"></i></span>
+                        <strong id="metric-queued">—</strong>
+                        <span>排队歌曲</span>
+                    </article>
+                    <article class="surface-panel health-card">
+                        <span class="health-card-icon"><i class="bi bi-cpu"></i></span>
+                        <strong id="metric-bot-state">—</strong>
+                        <span>Bot 状态</span>
+                    </article>
+                </section>
+
+                <section class="status-detail-grid">
+                    <article class="surface-panel">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">BOT & GATEWAY</span><h2>KOOK 连接</h2></div>
+                        </div>
+                        <div class="surface-body status-list">
+                            <div class="status-row"><span>Bot 运行状态</span><strong id="status-bot">—</strong></div>
+                            <div class="status-row"><span>事件循环心跳</span><strong id="status-loop-heartbeat">—</strong></div>
+                            <div class="status-row"><span>网关活动探针</span><strong id="status-gateway-probe">—</strong></div>
+                            <div class="status-row"><span>KOOK 网关心跳</span><strong id="status-gateway-heartbeat">—</strong></div>
+                        </div>
+                    </article>
+
+                    <article class="surface-panel">
+                        <div class="surface-heading">
+                            <div><span class="page-eyebrow">DEPENDENCIES</span><h2>运行依赖</h2></div>
+                        </div>
+                        <div class="surface-body status-list">
+                            <div class="status-row"><span>Bot Token</span><strong id="status-token">—</strong></div>
+                            <div class="status-row"><span>FFmpeg</span><strong id="status-ffmpeg">—</strong></div>
+                            <div class="status-row"><span>Web API</span><strong><span class="status-pill ok">当前页面可访问</span></strong></div>
+                            <div class="status-row"><span>健康数据源</span><strong>/api/debug</strong></div>
+                        </div>
+                    </article>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app-ui.js', v='1.0') }}"></script>
+    <script src="{{ url_for('static', filename='js/status.js', v='1.0') }}"></script>
+</body>
+</html>
