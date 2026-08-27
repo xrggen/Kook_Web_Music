@@ -61,6 +61,7 @@ SHARED_FILES = (
     "templates/settings.html",
     "templates/status.html",
     "templates/test.html",
+    "tests/test_qq_credential.py",
     "tests/test_stability.py",
     "tests/test_watchdog.py",
     "utils.py",
