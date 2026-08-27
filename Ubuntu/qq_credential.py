@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -122,6 +123,7 @@ def _load_json(path: str) -> Dict[str, Any]:
 
 
 def _key_expiry_from_cookie(cookies: Dict[str, str]) -> int:
+    """只使用 musickey 自身过期时间，不能拿短寿命 access token 判定整套登录失效。"""
     candidates = []
     for key in (
         "qqmusic_key_expiresAt",
@@ -189,6 +191,11 @@ def _credential_from_cookie(
     if not create_time and key_expires_at and key_expires_in:
         create_time = max(0, key_expires_at - key_expires_in)
 
+    access_expires_at = _epoch_seconds(
+        _first(cookies, "psrf_access_token_expiresAt", "access_token_expiresAt")
+        or carry.get("access_expires_at")
+    )
+
     refreshed_at = int(carry.get("refreshed_at") or 0)
     if mark_refreshed:
         refreshed_at = now
@@ -202,6 +209,7 @@ def _credential_from_cookie(
         "refresh_token": refresh_token,
         "refresh_key": refresh_key,
         "access_token": access_token,
+        "access_expires_at": access_expires_at,
         "openid": openid,
         "unionid": unionid,
         "login_type": login_type,
@@ -234,15 +242,43 @@ def _sync_external_user_info(credential: Dict[str, Any]) -> None:
         logger.warning("[QQ凭证] 同步 qq-music-api user-info.json 失败: %s", exc)
 
 
+def _invalidate_legacy_verify_cache() -> None:
+    """旧 Bot 命令仍经 qq_utils.verify_qq_cookie；凭证变化后立即清掉它的短期缓存。"""
+    candidates = ["qq_utils"]
+    if __package__:
+        candidates.append(f"{__package__}.qq_utils")
+    for name in candidates:
+        module = sys.modules.get(name)
+        cache = getattr(module, "_verify_cache", None) if module is not None else None
+        if isinstance(cache, dict):
+            cache["ts"] = 0
+            cache["result"] = None
+
+
 def _persist(credential: Dict[str, Any]) -> Dict[str, Any]:
-    cookie_str = str(credential.get("cookie") or "")
+    """原子保存 Credential 与兼容 Cookie。
+
+    psrf_access_token_expiresAt 只是 access token 的寿命，不代表 qqmusic_key/musickey
+    已失效。旧 verify_qq_cookie 会把它误当作整套登录态的最早过期时间，因此兼容
+    Cookie 中移除这个客户端时间戳；真实值单独保存在 credential JSON 里。
+    """
+    stored = dict(credential)
+    cookies = parse_cookie_string(str(stored.get("cookie") or ""))
+    if not stored.get("access_expires_at"):
+        stored["access_expires_at"] = _epoch_seconds(cookies.get("psrf_access_token_expiresAt"))
+    cookies.pop("psrf_access_token_expiresAt", None)
+    cookies.pop("access_token_expiresAt", None)
+    cookie_str = serialize_cookie(cookies)
+    stored["cookie"] = cookie_str
+
     _atomic_write_text(QQ_COOKIE_TXT_PATH, cookie_str)
     _atomic_write_text(
         QQ_CREDENTIAL_PATH,
-        json.dumps(credential, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True),
     )
-    _sync_external_user_info(credential)
-    return credential
+    _sync_external_user_info(stored)
+    _invalidate_legacy_verify_cache()
+    return stored
 
 
 def save_qq_cookie(cookie_str: str, source: str = "login") -> Dict[str, Any]:
@@ -279,7 +315,7 @@ def load_qq_credential() -> Dict[str, Any]:
                     source="migration",
                     mark_refreshed=False,
                 )
-                _persist(credential)
+                credential = _persist(credential)
             elif cookie_str != str(credential.get("cookie") or ""):
                 credential = _credential_from_cookie(
                     cookie_str,
@@ -287,7 +323,7 @@ def load_qq_credential() -> Dict[str, Any]:
                     source="external-update",
                     mark_refreshed=False,
                 )
-                _persist(credential)
+                credential = _persist(credential)
         return credential
 
 
@@ -305,6 +341,7 @@ def clear_qq_credential() -> None:
             except OSError as exc:
                 logger.warning("[QQ凭证] 删除 %s 失败: %s", path, exc)
         _sync_external_user_info({"uin": "", "cookie": ""})
+        _invalidate_legacy_verify_cache()
 
 
 def _qqmusic_sign(param_str: str) -> str:
@@ -374,7 +411,7 @@ def _full_refresh_payload(credential: Dict[str, Any]) -> Optional[Dict[str, Any]
         "openid": str(credential.get("openid") or ""),
         "access_token": str(credential.get("access_token") or ""),
         "refresh_token": str(credential.get("refresh_token") or ""),
-        "expired_in": int(credential.get("key_expires_at") or 0),
+        "expired_in": int(credential.get("access_expires_at") or credential.get("key_expires_at") or 0),
         "str_musicid": str(credential.get("str_musicid") or uin),
         "musicid": int(uin),
         "musickey": str(credential.get("musickey") or ""),
@@ -501,6 +538,10 @@ def _apply_refresh_result(
             updated[target] = str(value)
             cookies[cookie_key] = str(value)
 
+    access_expires_at = _epoch_seconds(
+        _response_value(result, "expired_at", "expiredAt", "accessTokenExpiresAt", "access_token_expires_at")
+    ) or int(credential.get("access_expires_at") or 0)
+
     try:
         login_type = int(_response_value(result, "loginType", "login_type") or credential.get("login_type") or 0)
     except (TypeError, ValueError):
@@ -512,6 +553,7 @@ def _apply_refresh_result(
         "uin": uin,
         "str_musicid": str(_response_value(result, "str_musicid", "strMusicid") or credential.get("str_musicid") or uin),
         "musickey": musickey,
+        "access_expires_at": access_expires_at,
         "login_type": login_type or (1 if musickey.startswith("W_X") else 2),
         "musickey_create_time": create_time,
         "key_expires_in": key_expires_in,
@@ -618,6 +660,7 @@ def ensure_qq_credential(force_refresh: bool = False, reason: str = "request") -
             logger.warning("[QQ凭证] 自动续期失败 reason=%s: %s", reason, exc)
             credential = load_qq_credential()
             status = _credential_status(credential)
+            # 刷新失败不立即注销仍未到期的旧凭证；网络抖动不能触发误登出。
             if status["valid"] or not status["expired"]:
                 status["valid"] = True
                 status.update({
