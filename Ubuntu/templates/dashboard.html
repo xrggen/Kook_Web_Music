@@ -3,277 +3,272 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KOOK 音乐控制台</title>
+    <title>KOOK Music</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/style.css', v='1.2') }}" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/dashboard.css', v='2.1') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/style.css', v='2.0') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/dashboard.css', v='3.0') }}" rel="stylesheet">
 </head>
 <body class="dashboard-page">
-    <div class="dashboard-app">
-        <header class="dashboard-topbar">
-            <div class="dashboard-brand">
-                <span class="dashboard-brand-icon" aria-hidden="true">
+    <div class="music-app-shell">
+        <aside class="app-sidebar" aria-label="主导航">
+            <a class="app-brand" href="/" aria-label="KOOK Music 首页">
+                <span class="brand-mark" aria-hidden="true">
                     <i class="bi bi-soundwave"></i>
                 </span>
-                <div>
-                    <h1>KOOK 音乐控制台</h1>
-                    <p>为指定语音频道搜索、排队并控制音乐</p>
-                </div>
-            </div>
+                <span>KOOK Music</span>
+            </a>
 
-            <div class="dashboard-target-pill" aria-live="polite">
-                <span class="target-status-dot" id="target-status-dot"></span>
-                <div>
-                    <small>当前播放目标</small>
-                    <strong id="target-summary">请先选择服务器与语音频道</strong>
-                </div>
-            </div>
+            <nav class="app-nav">
+                <a class="app-nav-item active" href="/dashboard" aria-current="page">
+                    <i class="bi bi-play-circle-fill"></i>
+                    <span>播放</span>
+                </a>
+                <a class="app-nav-item" href="#music-search-container">
+                    <i class="bi bi-music-note-list"></i>
+                    <span>音乐库</span>
+                    <small>预留</small>
+                </a>
+                <a class="app-nav-item" href="/account">
+                    <i class="bi bi-person-fill"></i>
+                    <span>音乐账号</span>
+                </a>
 
-            <nav class="dashboard-nav" aria-label="页面导航">
-                <a href="/" class="btn btn-outline-secondary btn-sm">
-                    <i class="bi bi-house"></i><span>首页</span>
-                </a>
-                <a href="/account" class="btn btn-outline-primary btn-sm">
-                    <i class="bi bi-person-circle"></i><span>音乐账号</span>
-                </a>
+                <span class="nav-separator" aria-hidden="true"></span>
+
+                <button class="app-nav-item nav-button" type="button" disabled title="系统状态页面将在后续版本接入">
+                    <i class="bi bi-hdd-rack-fill"></i>
+                    <span>系统状态</span>
+                    <span class="nav-status-dot online" aria-hidden="true"></span>
+                </button>
+                <button class="app-nav-item nav-button" type="button" disabled title="设置页面将在后续版本接入">
+                    <i class="bi bi-gear-fill"></i>
+                    <span>设置</span>
+                </button>
             </nav>
-        </header>
 
-        <main class="dashboard-grid">
-            <aside class="dashboard-sidebar">
-                <section class="dashboard-panel target-panel">
-                    <div class="panel-heading">
-                        <div>
-                            <span class="panel-eyebrow">步骤 1</span>
-                            <h2><i class="bi bi-broadcast-pin"></i> 选择播放目标</h2>
-                        </div>
-                        <button type="button" class="icon-button" id="reload-guilds-btn" title="刷新服务器" aria-label="刷新服务器">
-                            <i class="bi bi-arrow-clockwise"></i>
-                        </button>
-                    </div>
+            <div class="sidebar-session-card">
+                <span class="session-icon" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
+                <div>
+                    <small>播放控制</small>
+                    <strong>实时频道会话</strong>
+                </div>
+                <span class="signal-bars" aria-label="服务在线"><i></i><i></i><i></i></span>
+            </div>
+        </aside>
 
-                    <div class="panel-section">
-                        <label class="field-label">KOOK 服务器</label>
-                        <div id="guild-list" class="guild-list" aria-live="polite">
-                            <div class="dashboard-loading">
-                                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
-                                <span>正在加载服务器…</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel-section channel-section" id="server-info-container" hidden>
-                        <div class="selected-server">
-                            <span>已选择服务器</span>
-                            <strong id="server-name">—</strong>
-                        </div>
-
-                        <label class="field-label" for="voice-channel-select">语音频道</label>
-                        <select class="form-select" id="voice-channel-select">
-                            <option value="">选择语音频道</option>
-                        </select>
-                        <p class="field-help">网页点歌会加入此频道的独立播放列表。</p>
-
-                        <div class="channel-actions">
-                            <button class="btn btn-primary" id="join-btn" disabled>
-                                <i class="bi bi-mic-fill"></i> 加入频道
-                            </button>
-                            <button class="btn btn-outline-danger" id="leave-btn" disabled>
-                                <i class="bi bi-mic-mute"></i> 离开频道
-                            </button>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="dashboard-panel dashboard-guide">
-                    <span class="panel-eyebrow">使用提示</span>
-                    <ol>
-                        <li>选择服务器与语音频道。</li>
-                        <li>搜索歌曲并添加到播放列表。</li>
-                        <li>机器人会按频道队列顺序播放。</li>
-                    </ol>
-                </section>
-            </aside>
-
-            <section class="dashboard-workspace">
-                <section class="dashboard-empty-state" id="dashboard-empty-state">
-                    <span class="empty-state-icon"><i class="bi bi-speaker"></i></span>
-                    <span class="panel-eyebrow">开始点歌</span>
-                    <h2>先从左侧选择播放频道</h2>
-                    <p>每个语音频道拥有独立播放列表。选定目标后即可搜索网易云、QQ 音乐或 B 站内容。</p>
-                </section>
-
-                <section class="dashboard-panel search-panel" id="music-search-container" hidden>
-                    <div class="panel-heading search-heading">
-                        <div>
-                            <span class="panel-eyebrow">步骤 2</span>
-                            <h2><i class="bi bi-search"></i> 搜索并添加歌曲</h2>
-                        </div>
-                        <span class="target-hint" id="search-target-hint">尚未选择频道</span>
-                    </div>
-
-                    <div class="platform-selector" id="platform-selector" role="radiogroup" aria-label="音乐平台">
-                        <input type="radio" class="btn-check" name="platform" id="platform-wy" value="wy" checked>
-                        <label for="platform-wy">
-                            <i class="bi bi-music-note"></i>
-                            <span>网易云</span>
-                        </label>
-
-                        <input type="radio" class="btn-check" name="platform" id="platform-qq" value="qq">
-                        <label for="platform-qq">
-                            <i class="bi bi-music-note-beamed"></i>
-                            <span>QQ 音乐</span>
-                        </label>
-
-                        <input type="radio" class="btn-check" name="platform" id="platform-bili" value="bili">
-                        <label for="platform-bili">
-                            <i class="bi bi-play-circle"></i>
-                            <span>B 站</span>
-                        </label>
-                    </div>
-
-                    <div class="search-control">
-                        <label class="field-label" for="search-input">歌曲、歌手或视频</label>
-                        <div class="input-group input-group-lg">
-                            <span class="input-group-text"><i class="bi bi-search"></i></span>
-                            <input type="search" class="form-control" id="search-input" placeholder="输入歌曲名称或歌手" autocomplete="off">
-                            <button class="btn btn-primary" id="search-btn">
-                                搜索
-                            </button>
-                        </div>
-                    </div>
-
-                    <details class="playlist-import">
+        <main class="app-stage">
+            <header class="app-topbar">
+                <div class="context-cluster">
+                    <details class="context-selector guild-selector">
                         <summary>
-                            <span><i class="bi bi-music-note-list"></i> 批量导入歌单或收藏夹</span>
-                            <i class="bi bi-chevron-down details-chevron"></i>
+                            <span class="context-icon"><i class="bi bi-grid-fill"></i></span>
+                            <span class="context-copy">
+                                <small>服务器 / 频道</small>
+                                <strong id="target-summary">请选择播放目标</strong>
+                            </span>
+                            <i class="bi bi-chevron-down selector-chevron"></i>
                         </summary>
-                        <div class="playlist-import-body">
-                            <label class="field-label" for="playlist-input">歌单 ID 或链接</label>
-                            <div class="input-group">
-                                <input type="text" class="form-control" id="playlist-input" placeholder="网易云歌单 ID 或链接">
-                                <button class="btn btn-outline-primary" id="playlist-btn">
-                                    <i class="bi bi-plus-lg"></i> 导入到当前频道
+                        <div class="context-popover">
+                            <div class="popover-heading">
+                                <div>
+                                    <small>KOOK 服务器</small>
+                                    <strong>选择播放服务器</strong>
+                                </div>
+                                <button type="button" class="icon-button" id="reload-guilds-btn" title="刷新服务器" aria-label="刷新服务器">
+                                    <i class="bi bi-arrow-clockwise"></i>
                                 </button>
+                            </div>
+                            <div id="guild-list" class="guild-list" aria-live="polite">
+                                <div class="dashboard-loading">
+                                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                                    <span>正在加载服务器…</span>
+                                </div>
                             </div>
                         </div>
                     </details>
-                </section>
 
-                <section class="dashboard-panel results-panel" id="search-results" hidden>
-                    <div class="panel-heading">
-                        <div>
-                            <span class="panel-eyebrow">搜索结果</span>
-                            <h2>选择要排队的歌曲</h2>
+                    <section class="channel-context" id="server-info-container" hidden>
+                        <span class="context-server-name" id="server-name">—</span>
+                        <label class="visually-hidden" for="voice-channel-select">语音频道</label>
+                        <div class="channel-select-wrap">
+                            <i class="bi bi-headphones"></i>
+                            <select class="form-select" id="voice-channel-select">
+                                <option value="">选择语音频道</option>
+                            </select>
                         </div>
-                        <span class="result-count" id="search-result-count">0 首</span>
-                    </div>
-                    <div class="table-responsive search-results">
-                        <table class="table dashboard-table align-middle">
-                            <thead>
-                                <tr>
-                                    <th>歌曲</th>
-                                    <th>歌手</th>
-                                    <th>专辑 / 来源</th>
-                                    <th class="text-end">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="search-results-body"></tbody>
-                        </table>
-                    </div>
-                </section>
-            </section>
-
-            <aside class="dashboard-queue">
-                <section class="dashboard-panel now-playing-panel" id="player-container" hidden>
-                    <div class="panel-heading">
-                        <div>
-                            <span class="panel-eyebrow">正在播放</span>
-                            <h2 id="player-channel-name">频道：—</h2>
-                        </div>
-                        <span class="playing-indicator" id="playing-indicator">
-                            <i class="bi bi-soundwave"></i>
-                        </span>
-                    </div>
-
-                    <div class="now-playing-copy">
-                        <span class="now-playing-art" aria-hidden="true"><i class="bi bi-music-note-beamed"></i></span>
-                        <div>
-                            <strong id="current-song">未播放</strong>
-                            <span id="current-artist">等待添加歌曲</span>
-                        </div>
-                    </div>
-
-                    <div class="player-progress">
-                        <div class="progress" role="progressbar" aria-label="播放进度">
-                            <div class="progress-bar" id="song-progress" style="width: 0%"></div>
-                        </div>
-                        <div class="progress-time">
-                            <span id="current-time">00:00</span>
-                            <span id="total-time">00:00</span>
-                        </div>
-                    </div>
-
-                    <div class="player-actions">
-                        <button class="control-button primary" id="play-btn" title="继续播放">
-                            <i class="bi bi-play-fill"></i><span>继续</span>
-                        </button>
-                        <button class="control-button" id="pause-btn" title="暂停播放">
-                            <i class="bi bi-pause-fill"></i><span>暂停</span>
-                        </button>
-                        <button class="control-button" id="skip-btn" title="跳过当前歌曲">
-                            <i class="bi bi-skip-forward-fill"></i><span>跳过</span>
-                        </button>
-                        <button class="control-button mode-toggle" id="playlist-repeat-btn" title="开启列表循环" aria-pressed="false">
-                            <i class="bi bi-repeat"></i><span>列表循环</span>
-                        </button>
-                        <button class="control-button danger" id="stop-btn" title="停止播放">
-                            <i class="bi bi-stop-fill"></i><span>停止</span>
-                        </button>
-                    </div>
-                </section>
-
-                <section class="dashboard-panel queue-panel" id="playlist-container" hidden>
-                    <div class="panel-heading queue-heading">
-                        <div>
-                            <span class="panel-eyebrow">接下来播放</span>
-                            <h2>频道播放列表 <span class="queue-count" id="queue-count">0</span></h2>
-                        </div>
-                        <div class="queue-tools">
-                            <button type="button" class="icon-button" id="refresh-btn" title="刷新播放列表" aria-label="刷新播放列表">
-                                <i class="bi bi-arrow-clockwise"></i>
+                        <div class="channel-actions">
+                            <button class="compact-action primary" id="join-btn" disabled>
+                                <i class="bi bi-mic-fill"></i><span>加入频道</span>
                             </button>
-                            <button type="button" class="icon-button danger" id="clear-playlist-btn" title="清空播放列表" aria-label="清空播放列表">
-                                <i class="bi bi-trash3"></i>
+                            <button class="compact-action danger" id="leave-btn" disabled>
+                                <i class="bi bi-mic-mute"></i><span>离开频道</span>
                             </button>
                         </div>
-                    </div>
+                    </section>
+                </div>
 
-                    <div class="table-responsive queue-table-wrap">
-                        <table class="table dashboard-table queue-table align-middle">
-                            <thead>
-                                <tr>
-                                    <th>#</th>
-                                    <th>歌曲</th>
-                                    <th class="text-end">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="playlist-body">
-                                <tr>
-                                    <td colspan="3" class="empty-table-cell">播放列表为空</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="topbar-actions">
+                    <span class="bot-status">
+                        <span class="target-status-dot" id="target-status-dot"></span>
+                        <span>Bot Online</span>
+                    </span>
+                    <a class="profile-button" href="/account" title="音乐账号" aria-label="音乐账号">
+                        <i class="bi bi-person-fill"></i>
+                    </a>
+                </div>
+            </header>
+
+            <div class="app-content-grid">
+                <section class="workspace-column">
+                    <section class="dashboard-empty-state" id="dashboard-empty-state">
+                        <span class="empty-state-icon"><i class="bi bi-headphones"></i></span>
+                        <span class="panel-eyebrow">KOOK Music</span>
+                        <h1>选择一个语音频道开始播放</h1>
+                        <p>从顶部选择 KOOK 服务器与语音频道。每个频道拥有独立的播放队列与播放状态。</p>
+                        <span class="empty-state-tip"><i class="bi bi-arrow-up"></i> 从顶部选择播放目标</span>
+                    </section>
+
+                    <section class="music-search-panel" id="music-search-container" hidden>
+                        <div class="section-heading">
+                            <div>
+                                <span class="panel-eyebrow">PLAY MUSIC</span>
+                                <h1>搜索并添加音乐</h1>
+                                <p id="search-target-hint">尚未选择频道</p>
+                            </div>
+                            <details class="playlist-import">
+                                <summary><i class="bi bi-box-arrow-in-down"></i><span>导入歌单</span></summary>
+                                <div class="playlist-import-popover">
+                                    <div>
+                                        <small>批量导入</small>
+                                        <strong>添加歌单到当前频道</strong>
+                                    </div>
+                                    <label class="field-label" for="playlist-input">歌单 ID 或链接</label>
+                                    <input type="text" class="form-control" id="playlist-input" placeholder="网易云歌单 ID 或链接">
+                                    <button class="btn btn-primary" id="playlist-btn">
+                                        <i class="bi bi-plus-lg"></i> 导入到播放队列
+                                    </button>
+                                </div>
+                            </details>
+                        </div>
+
+                        <div class="search-box">
+                            <i class="bi bi-search"></i>
+                            <input type="search" id="search-input" placeholder="搜索歌曲、歌手、专辑或 BV 号..." autocomplete="off" aria-label="搜索音乐">
+                            <button id="search-btn" type="button"><span>搜索</span><i class="bi bi-arrow-right"></i></button>
+                        </div>
+
+                        <div class="platform-selector" id="platform-selector" role="radiogroup" aria-label="音乐平台">
+                            <input type="radio" name="platform" id="platform-wy" value="wy" checked>
+                            <label for="platform-wy"><span class="platform-dot netease"><i class="bi bi-music-note"></i></span>网易云</label>
+
+                            <input type="radio" name="platform" id="platform-qq" value="qq">
+                            <label for="platform-qq"><span class="platform-dot qq"><i class="bi bi-music-note-beamed"></i></span>QQ 音乐</label>
+
+                            <input type="radio" name="platform" id="platform-bili" value="bili">
+                            <label for="platform-bili"><span class="platform-dot bili"><i class="bi bi-play-btn"></i></span>Bilibili</label>
+                        </div>
+                    </section>
+
+                    <section class="results-panel" id="search-results" hidden>
+                        <div class="list-heading">
+                            <div>
+                                <span class="panel-eyebrow">SEARCH RESULTS</span>
+                                <h2>搜索结果</h2>
+                            </div>
+                            <span class="result-count" id="search-result-count">0 首</span>
+                        </div>
+                        <div class="search-results-wrap">
+                            <table class="dashboard-table search-results-table">
+                                <thead class="visually-hidden">
+                                    <tr><th>歌曲</th><th>歌手</th><th>专辑 / 来源</th><th>操作</th></tr>
+                                </thead>
+                                <tbody id="search-results-body"></tbody>
+                            </table>
+                        </div>
+                    </section>
                 </section>
-            </aside>
+
+                <aside class="queue-column">
+                    <section class="queue-panel" id="playlist-container" hidden>
+                        <div class="queue-heading">
+                            <div>
+                                <span class="panel-eyebrow">NEXT UP</span>
+                                <h2>播放队列 <span class="queue-count" id="queue-count">0</span></h2>
+                            </div>
+                            <div class="queue-tools">
+                                <button type="button" class="icon-button" id="refresh-btn" title="刷新播放队列" aria-label="刷新播放队列">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                                <button type="button" class="icon-button danger" id="clear-playlist-btn" title="清空播放队列" aria-label="清空播放队列">
+                                    <i class="bi bi-trash3"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <p class="queue-caption">接下来</p>
+                        <div class="queue-list-wrap">
+                            <table class="dashboard-table queue-table">
+                                <thead class="visually-hidden"><tr><th>#</th><th>歌曲</th><th>操作</th></tr></thead>
+                                <tbody id="playlist-body">
+                                    <tr><td colspan="3" class="empty-table-cell">播放列表为空</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="queue-footer"><i class="bi bi-list"></i> 当前版本按加入顺序播放</div>
+                    </section>
+                </aside>
+            </div>
         </main>
+
+        <section class="global-player" id="player-container" hidden aria-label="播放器">
+            <div class="now-playing-copy">
+                <span class="now-playing-art" aria-hidden="true"><i class="bi bi-music-note-beamed"></i></span>
+                <div class="now-playing-text">
+                    <div class="title-line">
+                        <strong id="current-song">未播放</strong>
+                        <span class="playing-indicator" id="playing-indicator"><i class="bi bi-soundwave"></i></span>
+                    </div>
+                    <span id="current-artist">等待添加歌曲</span>
+                    <small id="player-channel-name">频道：—</small>
+                </div>
+            </div>
+
+            <div class="player-center">
+                <div class="player-actions">
+                    <button class="control-button mode-toggle" id="playlist-repeat-btn" title="开启列表循环" aria-pressed="false">
+                        <i class="bi bi-repeat"></i><span>列表循环</span>
+                    </button>
+                    <button class="control-button" id="play-btn" title="继续播放">
+                        <i class="bi bi-play-fill"></i><span>继续</span>
+                    </button>
+                    <button class="control-button primary" id="pause-btn" title="暂停播放">
+                        <i class="bi bi-pause-fill"></i><span>暂停</span>
+                    </button>
+                    <button class="control-button" id="skip-btn" title="跳过当前歌曲">
+                        <i class="bi bi-skip-forward-fill"></i><span>跳过</span>
+                    </button>
+                </div>
+                <div class="player-progress">
+                    <span id="current-time">00:00</span>
+                    <div class="progress" role="progressbar" aria-label="播放进度">
+                        <div class="progress-bar" id="song-progress" style="width: 0%"></div>
+                    </div>
+                    <span id="total-time">00:00</span>
+                </div>
+            </div>
+
+            <div class="player-secondary-actions">
+                <span class="player-live"><span></span> LIVE</span>
+                <button class="control-button danger stop-button" id="stop-btn" title="停止播放">
+                    <i class="bi bi-stop-fill"></i><span>停止</span>
+                </button>
+            </div>
+        </section>
     </div>
 
     <div class="dashboard-toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/dashboard.js', v='2.1') }}"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js', v='3.0') }}"></script>
 </body>
 </html>
