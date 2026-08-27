@@ -147,6 +147,10 @@ textarea.form-control { min-height: 110px; }
 .dashboard-page .track-secondary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-page .track-primary { color: #f1f3f7; font-size: .78rem; font-weight: 700; }
 .dashboard-page .track-secondary { margin-top: 2px; color: #737b87; font-size: .62rem; }
+.dashboard-page .search-results-table td:first-child .track-primary { color: #f3f5f8; font-size: .78rem; font-weight: 700; }
+.dashboard-page .search-results-table td:first-child .track-secondary { margin-top: 2px; color: #6f7784; font-size: .61rem; }
+.dashboard-page .queue-table td:nth-child(2) .track-primary { color: #eff2f6; font-size: .74rem; font-weight: 700; }
+.dashboard-page .queue-table td:nth-child(2) .track-secondary { margin-top: 2px; color: #747c88; font-size: .62rem; }
 .dashboard-page .search-results-table .empty-table-cell,
 .dashboard-page .queue-table .empty-table-cell { grid-column: 1 / -1; text-align: center; }
 .dashboard-page .dashboard-toast {
