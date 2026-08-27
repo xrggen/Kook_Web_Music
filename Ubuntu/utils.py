@@ -265,6 +265,30 @@ def refill_playlist_queue(channel_id, play_list_dict, count=BATCH_SIZE, lock=Non
     return replaced
 
 
+def _display_metadata(file_path, extra_data):
+    """Return stable display metadata for Web UI without exposing playback URLs as titles.
+
+    Web-originated tracks use ``title``/``artist`` while legacy KOOK command tracks store
+    the title in ``音乐名字``. Prefer explicit metadata from either source and only fall
+    back to a local filename for actual local files.
+    """
+    extra_data = extra_data or {}
+    title = extra_data.get('title') or extra_data.get('音乐名字')
+    artist = extra_data.get('artist') or extra_data.get('歌手')
+
+    if not title:
+        if file_path.startswith(('http://', 'https://')):
+            title = '未知歌曲'
+        else:
+            normalized_path = file_path.replace('\\', '/')
+            title = normalized_path.rsplit('/', 1)[-1] or '未知歌曲'
+
+    if not artist:
+        artist = '未知歌手' if file_path.startswith(('http://', 'https://')) else '本地文件'
+
+    return title, artist
+
+
 # 格式化播放列表数据
 def format_playlist_data(play_list_data):
     result = []
@@ -293,12 +317,11 @@ def format_playlist_data(play_list_data):
                     'start_time': now_playing.get('start', 0)
                 })
         else:
-            # 普通文件
-            file_name = file_path.split('/')[-1] if '/' in file_path else file_path
+            song_name, artist_name = _display_metadata(file_path, extra_data)
             result.append({
                 'id': 'local',
-                'name': extra_data.get('title', file_name),
-                'artist': extra_data.get('artist', '本地文件'),
+                'name': song_name,
+                'artist': artist_name,
                 'duration': now_playing.get('duration', 0),
                 'playing': True,
                 'position': now_playing.get('ss', 0),
@@ -328,12 +351,11 @@ def format_playlist_data(play_list_data):
                     'playing': False
                 })
         else:
-            # 普通文件
-            file_name = file_path.split('/')[-1] if '/' in file_path else file_path
+            song_name, artist_name = _display_metadata(file_path, extra_data)
             result.append({
                 'id': 'local',
-                'name': extra_data.get('title', file_name),
-                'artist': extra_data.get('artist', '本地文件'),
+                'name': song_name,
+                'artist': artist_name,
                 'queue_index': queue_index,
                 'playing': False
             })
