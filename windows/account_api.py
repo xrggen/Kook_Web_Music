@@ -139,6 +139,77 @@ def register_account_routes(app):
         """浏览器端界面设置页面"""
         return render_template("settings.html")
 
+    @app.route("/api/playlist/promote", methods=["POST"])
+    def promote_playlist_item():
+        """把指定待播歌曲提升到队首，作为当前歌曲之后的下一首。"""
+        data = request.get_json(silent=True) or {}
+        channel_id = str(data.get("channel_id") or "")
+        index = data.get("index")
+        if not channel_id or index is None:
+            return jsonify({"success": False, "error": "缺少必要参数"})
+
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "无效的歌曲索引"})
+
+        try:
+            try:
+                from . import kookvoice
+            except ImportError:
+                import kookvoice
+
+            with kookvoice.state_lock:
+                state = kookvoice.play_list.get(channel_id)
+                if state is None:
+                    return jsonify({"success": False, "error": "播放列表不存在"})
+
+                queue = state.get("play_list", [])
+                if index < 0 or index >= len(queue):
+                    return jsonify({"success": False, "error": "索引超出范围"})
+
+                item = queue[index]
+                extra = item.get("extra", {}) if isinstance(item, dict) else {}
+                if not isinstance(extra, dict):
+                    extra = {}
+                song_name = extra.get("title") or extra.get("音乐名字") or "未知歌曲"
+
+                if index == 0:
+                    return jsonify({
+                        "success": True,
+                        "already_top": True,
+                        "name": song_name,
+                    })
+
+                item = queue.pop(index)
+                queue.insert(0, item)
+
+                # 随机播放开启时 _queue_backup 保存原顺序。同步本次“顶歌”意图，
+                # 避免之后关闭随机播放时把被顶歌曲重新放回旧位置。
+                backup = state.get("_queue_backup")
+                if isinstance(backup, list):
+                    backup_index = next(
+                        (i for i, candidate in enumerate(backup) if candidate is item),
+                        None,
+                    )
+                    if backup_index is not None and backup_index > 0:
+                        backup.insert(0, backup.pop(backup_index))
+
+            logger.info(
+                "[顶歌] channel=%s index=%s song=%s",
+                channel_id,
+                index,
+                song_name,
+            )
+            return jsonify({
+                "success": True,
+                "already_top": False,
+                "name": song_name,
+            })
+        except Exception as e:
+            logger.error("顶歌失败: %s", e)
+            return jsonify({"success": False, "error": str(e)})
+
     @app.route("/api/account/status")
     def account_status():
         """获取登录状态"""
