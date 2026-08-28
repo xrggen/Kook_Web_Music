@@ -49,6 +49,26 @@
                         <div class="surface-body">
                             <div class="setting-row">
                                 <div class="setting-copy">
+                                    <strong>主题模式</strong>
+                                    <span>可固定使用深色或浅色主题，也可以跟随操作系统的外观设置自动切换。</span>
+                                </div>
+                                <div class="theme-choice-group" role="radiogroup" aria-label="主题模式">
+                                    <label class="theme-choice">
+                                        <input type="radio" name="ui-theme" id="theme-dark" value="dark">
+                                        <span><i class="bi bi-moon-stars-fill"></i>深色</span>
+                                    </label>
+                                    <label class="theme-choice">
+                                        <input type="radio" name="ui-theme" id="theme-light" value="light">
+                                        <span><i class="bi bi-sun-fill"></i>浅色</span>
+                                    </label>
+                                    <label class="theme-choice">
+                                        <input type="radio" name="ui-theme" id="theme-system" value="system">
+                                        <span><i class="bi bi-circle-half"></i>跟随系统</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-copy">
                                     <strong>紧凑布局</strong>
                                     <span>减少面板和列表的垂直间距，更适合 1080p 屏幕同时展示更多队列与歌单。</span>
                                 </div>
@@ -115,7 +135,7 @@
                             <div><span class="page-eyebrow">RESET</span><h2>重置界面偏好</h2></div>
                         </div>
                         <div class="surface-body">
-                            <p class="muted-copy" style="font-size:.68rem;line-height:1.6;margin-top:0;">只会清除紧凑布局与动画偏好，不会影响音乐账号、播放队列或服务端配置。</p>
+                            <p class="muted-copy" style="font-size:.68rem;line-height:1.6;margin-top:0;">只会清除主题、紧凑布局与动画偏好，不会影响音乐账号、播放队列或服务端配置。</p>
                             <button class="app-header-button" type="button" id="settings-reset-btn">
                                 <i class="bi bi-arrow-counterclockwise"></i><span>恢复默认界面设置</span>
                             </button>

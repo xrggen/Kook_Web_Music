@@ -1,6 +1,7 @@
 'use strict';
 
 document.addEventListener('DOMContentLoaded', () => {
+    const themeOptions = Array.from(document.querySelectorAll('input[name="ui-theme"]'));
     const densityToggle = document.getElementById('density-toggle');
     const motionToggle = document.getElementById('motion-toggle');
     const resetButton = document.getElementById('settings-reset-btn');
@@ -8,9 +9,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function syncControls() {
         const preferences = window.KookUI?.getPreferences?.() || {
+            theme: 'dark',
             density: 'comfortable',
             reducedMotion: false
         };
+        themeOptions.forEach(option => {
+            option.checked = option.value === preferences.theme;
+        });
         if (densityToggle) densityToggle.checked = preferences.density === 'compact';
         if (motionToggle) motionToggle.checked = Boolean(preferences.reducedMotion);
     }
@@ -23,6 +28,19 @@ document.addEventListener('DOMContentLoaded', () => {
             message.textContent = '';
         }, 2600);
     }
+
+    themeOptions.forEach(option => {
+        option.addEventListener('change', () => {
+            if (!option.checked) return;
+            const preferences = window.KookUI?.setPreference?.('theme', option.value);
+            const labels = {
+                dark: '已切换为深色模式',
+                light: '已切换为浅色模式',
+                system: `已跟随系统外观（当前${preferences?.resolvedTheme === 'light' ? '浅色' : '深色'}）`
+            };
+            showMessage(labels[option.value] || '主题设置已更新');
+        });
+    });
 
     densityToggle?.addEventListener('change', () => {
         window.KookUI?.setPreference?.('density', densityToggle.checked ? 'compact' : 'comfortable');

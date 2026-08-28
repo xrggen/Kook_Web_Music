@@ -1,0 +1,398 @@
+/* KOOK Music shared theme layer. Loaded by app-ui.js after legacy styles. */
+
+.theme-choice-group {
+    display: inline-grid;
+    grid-template-columns: repeat(3, minmax(82px, 1fr));
+    gap: 5px;
+    padding: 4px;
+    border: 1px solid var(--app-border);
+    border-radius: 11px;
+    background: var(--app-bg-soft);
+}
+.theme-choice {
+    position: relative;
+    margin: 0;
+    cursor: pointer;
+}
+.theme-choice input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+.theme-choice span {
+    display: inline-flex;
+    width: 100%;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--app-muted);
+    font-size: .64rem;
+    font-weight: 750;
+    white-space: nowrap;
+    transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+.theme-choice:hover span {
+    color: var(--app-text);
+    background: var(--app-surface-2);
+}
+.theme-choice input:focus-visible + span {
+    outline: 2px solid var(--app-accent);
+    outline-offset: 2px;
+}
+.theme-choice input:checked + span {
+    color: var(--app-accent);
+    border-color: rgba(116, 103, 244, .28);
+    background: var(--app-accent-soft);
+}
+
+html[data-ui-theme="light"] {
+    color-scheme: light;
+    --app-bg: #f4f6fa;
+    --app-bg-soft: #edf1f6;
+    --app-surface: #ffffff;
+    --app-surface-2: #f8fafc;
+    --app-surface-3: #eef2f7;
+    --app-border: #dce2ea;
+    --app-border-strong: #c9d1dc;
+    --app-text: #20242c;
+    --app-text-2: #596273;
+    --app-muted: #7a8493;
+    --app-accent: #6758e7;
+    --app-accent-2: #7566ee;
+    --app-accent-soft: rgba(103, 88, 231, .10);
+    --app-success: #229a66;
+    --app-warning: #ad7622;
+    --app-danger: #c94c5b;
+    --app-shadow: 0 22px 55px rgba(40, 52, 72, .12);
+}
+
+html[data-ui-theme="light"] .dashboard-page {
+    --app-bg: #f4f6fa;
+    --app-bg-soft: #edf1f6;
+    --app-surface: #ffffff;
+    --app-surface-2: #f8fafc;
+    --app-surface-3: #eef2f7;
+    --app-border: #dce2ea;
+    --app-border-strong: #c9d1dc;
+    --app-text: #20242c;
+    --app-text-2: #596273;
+    --app-muted: #7a8493;
+    --app-accent: #6758e7;
+    --app-accent-2: #7566ee;
+    --app-accent-soft: rgba(103, 88, 231, .10);
+    --app-success: #229a66;
+    --app-danger: #c94c5b;
+    --app-shadow: 0 22px 55px rgba(40, 52, 72, .12);
+}
+
+html[data-ui-theme="light"] body.app-page,
+html[data-ui-theme="light"] .dashboard-page {
+    color: var(--app-text);
+    background:
+        radial-gradient(circle at 42% -12%, rgba(103, 88, 231, .09), transparent 35rem),
+        linear-gradient(180deg, #f7f8fb 0%, #f1f4f8 100%);
+}
+
+html[data-ui-theme="light"] .app-sidebar {
+    border-color: var(--app-border);
+    background: rgba(248, 250, 253, .96);
+    box-shadow: 10px 0 30px rgba(45, 55, 72, .035);
+}
+html[data-ui-theme="light"] .app-brand { color: #20242c; }
+html[data-ui-theme="light"] .app-nav-item { color: #667080; }
+html[data-ui-theme="light"] .app-nav-item small { color: #9099a6; }
+html[data-ui-theme="light"] .app-nav-item:hover {
+    color: #242934;
+    background: #edf1f6;
+}
+html[data-ui-theme="light"] .app-nav-item.active {
+    color: #ffffff;
+    border-color: rgba(103, 88, 231, .24);
+    background: linear-gradient(135deg, #6c61dc, #7968e4);
+    box-shadow: 0 8px 22px rgba(103, 88, 231, .15);
+}
+html[data-ui-theme="light"] .nav-button:disabled:hover {
+    color: #667080;
+    background: transparent;
+}
+html[data-ui-theme="light"] .sidebar-session-card {
+    background: linear-gradient(145deg, #ffffff, #f2f5f9);
+    box-shadow: 0 8px 22px rgba(45, 55, 72, .06);
+}
+html[data-ui-theme="light"] .sidebar-session-card strong { color: #303640; }
+html[data-ui-theme="light"] .session-icon {
+    color: #6758e7;
+    background: rgba(103, 88, 231, .10);
+}
+
+html[data-ui-theme="light"] .page-topbar,
+html[data-ui-theme="light"] .app-topbar {
+    background: linear-gradient(180deg, rgba(244,246,250,.98) 65%, rgba(244,246,250,0));
+}
+html[data-ui-theme="light"] .page-topbar-copy small,
+html[data-ui-theme="light"] .page-eyebrow,
+html[data-ui-theme="light"] .panel-eyebrow { color: #7f8998; }
+html[data-ui-theme="light"] .page-topbar-copy strong,
+html[data-ui-theme="light"] .page-heading h1,
+html[data-ui-theme="light"] .surface-heading h2,
+html[data-ui-theme="light"] .account-intro-panel h2,
+html[data-ui-theme="light"] .health-hero-copy strong,
+html[data-ui-theme="light"] .health-card strong,
+html[data-ui-theme="light"] .setting-copy strong,
+html[data-ui-theme="light"] .library-platform-card strong,
+html[data-ui-theme="light"] .library-card-title,
+html[data-ui-theme="light"] .library-empty strong,
+html[data-ui-theme="light"] .status-row strong {
+    color: #252a33;
+}
+html[data-ui-theme="light"] .page-heading p,
+html[data-ui-theme="light"] .surface-heading p,
+html[data-ui-theme="light"] .account-intro-panel p,
+html[data-ui-theme="light"] .account-benefit small,
+html[data-ui-theme="light"] .account-form-note,
+html[data-ui-theme="light"] .library-card-meta,
+html[data-ui-theme="light"] .health-hero-copy span,
+html[data-ui-theme="light"] .health-card span,
+html[data-ui-theme="light"] .setting-copy span,
+html[data-ui-theme="light"] .settings-note,
+html[data-ui-theme="light"] .status-row span,
+html[data-ui-theme="light"] .muted-copy,
+html[data-ui-theme="light"] .text-muted {
+    color: #778292 !important;
+}
+
+html[data-ui-theme="light"] .app-header-button,
+html[data-ui-theme="light"] .compact-action,
+html[data-ui-theme="light"] .profile-button,
+html[data-ui-theme="light"] .icon-button,
+html[data-ui-theme="light"] .playlist-import > summary {
+    color: #5f6877;
+    border-color: var(--app-border);
+    background: #ffffff;
+    box-shadow: 0 3px 10px rgba(45, 55, 72, .035);
+}
+html[data-ui-theme="light"] .app-header-button:hover,
+html[data-ui-theme="light"] .profile-button:hover,
+html[data-ui-theme="light"] .icon-button:hover,
+html[data-ui-theme="light"] .playlist-import > summary:hover {
+    color: #252a33;
+    border-color: var(--app-border-strong);
+    background: #f7f9fc;
+}
+html[data-ui-theme="light"] .app-header-button.primary,
+html[data-ui-theme="light"] .compact-action.primary:not(:disabled) {
+    color: #5f50d6;
+    border-color: rgba(103,88,231,.24);
+    background: rgba(103,88,231,.08);
+}
+html[data-ui-theme="light"] .page-chip {
+    color: #687282;
+    background: #ffffff;
+}
+
+html[data-ui-theme="light"] .surface-panel,
+html[data-ui-theme="light"] .dashboard-empty-state,
+html[data-ui-theme="light"] .music-search-panel,
+html[data-ui-theme="light"] .results-panel,
+html[data-ui-theme="light"] .queue-panel {
+    border-color: var(--app-border);
+    background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(248,250,252,.98));
+    box-shadow: 0 16px 42px rgba(43, 53, 69, .07);
+}
+html[data-ui-theme="light"] .surface-heading {
+    border-bottom-color: var(--app-border);
+}
+
+html[data-ui-theme="light"] .account-platform-switch,
+html[data-ui-theme="light"] .account-login-panel .nav-tabs {
+    border-color: var(--app-border);
+    background: #edf1f6;
+}
+html[data-ui-theme="light"] .account-platform-switch .nav-link,
+html[data-ui-theme="light"] .account-login-panel .nav-tabs .nav-link {
+    color: #697383;
+}
+html[data-ui-theme="light"] .account-platform-switch .nav-link:hover,
+html[data-ui-theme="light"] .account-login-panel .nav-tabs .nav-link:hover {
+    color: #252a33;
+    border-color: var(--app-border);
+    background: #ffffff;
+}
+html[data-ui-theme="light"] .account-platform-switch .nav-link.active,
+html[data-ui-theme="light"] .account-login-panel .nav-tabs .nav-link.active {
+    color: #5d50d2;
+    border-color: rgba(103,88,231,.24);
+    background: rgba(103,88,231,.09);
+}
+html[data-ui-theme="light"] .platform-switch-copy small,
+html[data-ui-theme="light"] .platform-switch-arrow { color: #8a94a2; }
+html[data-ui-theme="light"] .account-benefit > span {
+    color: #6758e7;
+    background: rgba(103,88,231,.09);
+}
+html[data-ui-theme="light"] .account-benefit strong { color: #3d444f; }
+html[data-ui-theme="light"] .account-security-note,
+html[data-ui-theme="light"] .settings-note {
+    color: #6f7988;
+    border-color: var(--app-border);
+    background: #f5f7fa;
+}
+html[data-ui-theme="light"] .settings-note strong { color: #353b45; }
+html[data-ui-theme="light"] .qr-stage {
+    border-color: var(--app-border);
+    background: radial-gradient(circle at center, rgba(103,88,231,.06), transparent 55%), #f6f8fb;
+}
+html[data-ui-theme="light"] .qr-stage img {
+    background: #ffffff;
+    box-shadow: 0 14px 34px rgba(43,53,69,.13);
+}
+html[data-ui-theme="light"] .account-form-stack .form-control,
+html[data-ui-theme="light"] .account-form-stack .input-group-text,
+html[data-ui-theme="light"] .form-control,
+html[data-ui-theme="light"] .form-select,
+html[data-ui-theme="light"] textarea {
+    color: #2d333d;
+    border-color: var(--app-border);
+    background-color: #ffffff;
+}
+html[data-ui-theme="light"] .form-control::placeholder,
+html[data-ui-theme="light"] textarea::placeholder { color: #a2aab6; }
+html[data-ui-theme="light"] .account-profile-panel img {
+    border-color: #d6dce5;
+    box-shadow: 0 12px 28px rgba(43,53,69,.13);
+}
+html[data-ui-theme="light"] .account-profile-panel h4,
+html[data-ui-theme="light"] .account-stat strong,
+html[data-ui-theme="light"] .account-playlist-grid .fw-bold { color: #2d333d; }
+html[data-ui-theme="light"] .account-profile-signature { border-top-color: var(--app-border); color: #7a8493 !important; }
+html[data-ui-theme="light"] .account-stat,
+html[data-ui-theme="light"] .account-playlist-grid .card {
+    border-color: var(--app-border);
+    background: #f8fafc;
+}
+html[data-ui-theme="light"] .account-playlist-grid .card:hover {
+    border-color: var(--app-border-strong);
+    background: #ffffff;
+}
+html[data-ui-theme="light"] .account-playlist-grid .card-img-top { border-bottom-color: var(--app-border); background: #eef2f7; }
+
+html[data-ui-theme="light"] .library-platform-status { border-color: var(--app-border); color: #737d8c; }
+html[data-ui-theme="light"] .library-platform-status.connected { color: #23845c; background: rgba(34,154,102,.07); }
+html[data-ui-theme="light"] .library-filter button,
+html[data-ui-theme="light"] .library-card,
+html[data-ui-theme="light"] .library-card-actions button,
+html[data-ui-theme="light"] .library-card-actions a {
+    color: #667080;
+    border-color: var(--app-border);
+    background: #ffffff;
+}
+html[data-ui-theme="light"] .library-filter button.active,
+html[data-ui-theme="light"] .library-card-actions .primary {
+    color: #5f50d6;
+    border-color: rgba(103,88,231,.25);
+    background: rgba(103,88,231,.08);
+}
+html[data-ui-theme="light"] .library-card:hover { border-color: var(--app-border-strong); background: #ffffff; }
+html[data-ui-theme="light"] .library-cover { background: linear-gradient(145deg,#eef1f7,#e4e9f1); }
+
+html[data-ui-theme="light"] .health-orb {
+    color: #77818f;
+    border-color: var(--app-border);
+    background: #f1f4f8;
+}
+html[data-ui-theme="light"] .status-row,
+html[data-ui-theme="light"] .setting-row { border-bottom-color: var(--app-border); }
+html[data-ui-theme="light"] .status-pill { color: #697383; background: #eef2f6; }
+html[data-ui-theme="light"] .switch-control span {
+    border-color: #cbd3de;
+    background: #e4e9f0;
+}
+html[data-ui-theme="light"] .switch-control span::after { background: #8f99a7; }
+html[data-ui-theme="light"] .switch-control input:checked + span { border-color: #6758e7; background: rgba(103,88,231,.18); }
+html[data-ui-theme="light"] .switch-control input:checked + span::after { background: #6758e7; }
+
+/* Dashboard-specific legacy dark values. */
+html[data-ui-theme="light"] .context-selector > summary,
+html[data-ui-theme="light"] .dashboard-page .channel-select-wrap .form-select {
+    color: #303640;
+    border-color: var(--app-border);
+    background: #ffffff;
+}
+html[data-ui-theme="light"] .context-selector[open] > summary,
+html[data-ui-theme="light"] .context-selector > summary:hover { background: #f7f9fc; }
+html[data-ui-theme="light"] .context-popover,
+html[data-ui-theme="light"] .playlist-import-popover {
+    border-color: var(--app-border-strong);
+    background: rgba(255,255,255,.985);
+    box-shadow: 0 22px 55px rgba(43,53,69,.16);
+}
+html[data-ui-theme="light"] .guild-item:hover { border-color: var(--app-border); background: #f2f5f9; }
+html[data-ui-theme="light"] .guild-item.active { color: #5d50d2; border-color: rgba(103,88,231,.28); background: rgba(103,88,231,.08); }
+html[data-ui-theme="light"] .guild-avatar { background: #e7ebf1; }
+html[data-ui-theme="light"] .dashboard-page .channel-select-wrap option { color: #2d333d; background: #ffffff; }
+html[data-ui-theme="light"] .bot-status { color: #267a57; border-color: var(--app-border); background: #ffffff; }
+html[data-ui-theme="light"] .dashboard-page .playlist-import-popover .form-control { color: #2d333d; border-color: var(--app-border); background: #ffffff; }
+html[data-ui-theme="light"] .search-box {
+    border-color: #bcb5f1;
+    background: #ffffff;
+    box-shadow: inset 0 0 0 1px rgba(103,88,231,.025), 0 6px 20px rgba(43,53,69,.035);
+}
+html[data-ui-theme="light"] .search-box input { color: #252a33; }
+html[data-ui-theme="light"] .search-box input::placeholder { color: #9aa4b1; }
+html[data-ui-theme="light"] .platform-selector label { color: #687282; border-color: var(--app-border); background: #ffffff; }
+html[data-ui-theme="light"] .platform-selector input:checked + label { color: #5d50d2; border-color: rgba(103,88,231,.34); background: rgba(103,88,231,.09); }
+html[data-ui-theme="light"] .result-count,
+html[data-ui-theme="light"] .queue-count { color: #5d50d2; background: rgba(103,88,231,.10); }
+html[data-ui-theme="light"] .search-results-table tbody tr { background: #f8fafc; }
+html[data-ui-theme="light"] .search-results-table tbody tr:hover { border-color: var(--app-border); background: #f1f4f8; }
+html[data-ui-theme="light"] .search-results-table td { color: #697383; }
+html[data-ui-theme="light"] .search-results-table td:first-child::before {
+    color: #6758e7;
+    background: linear-gradient(145deg, #eef0fb, #e8eaf7);
+}
+html[data-ui-theme="light"] .search-results-table td:first-child strong,
+html[data-ui-theme="light"] .queue-table td:nth-child(2) strong,
+html[data-ui-theme="light"] .now-playing-text strong { color: #292f38; }
+html[data-ui-theme="light"] .search-results-table td:first-child span,
+html[data-ui-theme="light"] .queue-table td:nth-child(2) span,
+html[data-ui-theme="light"] .queue-caption,
+html[data-ui-theme="light"] .queue-index,
+html[data-ui-theme="light"] .queue-footer,
+html[data-ui-theme="light"] .now-playing-text > span,
+html[data-ui-theme="light"] .now-playing-text small,
+html[data-ui-theme="light"] .player-progress > span,
+html[data-ui-theme="light"] .player-live { color: #7a8493; }
+html[data-ui-theme="light"] .queue-table tbody tr:hover { border-color: var(--app-border); background: #f3f6f9; }
+html[data-ui-theme="light"] .queue-footer { border-top-color: var(--app-border); }
+html[data-ui-theme="light"] .dashboard-page .remove-btn { color: #7a8493; border-color: var(--app-border); }
+html[data-ui-theme="light"] .global-player {
+    border-top-color: var(--app-border);
+    background: rgba(252,253,255,.97);
+    box-shadow: 0 -16px 45px rgba(43,53,69,.10);
+}
+html[data-ui-theme="light"] .now-playing-art {
+    color: #6758e7;
+    border-color: #d7dde6;
+    background:
+        radial-gradient(circle at 30% 20%, rgba(103,88,231,.18), transparent 45%),
+        linear-gradient(145deg, #f0f2f9, #e7ebf2);
+}
+html[data-ui-theme="light"] .control-button { color: #687282; }
+html[data-ui-theme="light"] .control-button:hover:not(:disabled) { color: #252a33; background: #edf1f6; }
+html[data-ui-theme="light"] .control-button.primary { color: #ffffff; }
+html[data-ui-theme="light"] .dashboard-page .player-progress .progress { background: #dde3eb; }
+html[data-ui-theme="light"] .dashboard-page .player-progress .progress-bar::after {
+    background: #ffffff;
+    box-shadow: 0 0 0 2px rgba(103,88,231,.12);
+}
+html[data-ui-theme="light"] .dashboard-toast,
+html[data-ui-theme="light"] .toast {
+    color: #252a33 !important;
+    border-color: var(--app-border-strong) !important;
+    background: rgba(255,255,255,.985) !important;
+    box-shadow: var(--app-shadow) !important;
+}
