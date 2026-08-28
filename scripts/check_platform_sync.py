@@ -54,6 +54,7 @@ SHARED_FILES = (
     "static/js/qq_account.js",
     "static/js/settings.js",
     "static/js/status.js",
+    "static/js/theme-init.js",
     "templates/_app_sidebar.html",
     "templates/account.html",
     "templates/dashboard.html",
