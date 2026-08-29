@@ -1,0 +1,152 @@
+/* Second-pass mobile ergonomics. Loaded after mobile.css. */
+@media (max-width: 820px) {
+    html { overscroll-behavior-y: none; }
+    body { -webkit-tap-highlight-color: transparent; }
+
+    .mobile-app-brand > span:last-child { min-width: 0; }
+    #mobile-header-context,
+    #mobile-header-title {
+        overflow: hidden;
+        max-width: min(66vw, 420px);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .mobile-header-action,
+    .compact-action,
+    .mobile-player-control,
+    .profile-button,
+    .icon-button {
+        min-width: 44px;
+        min-height: 44px;
+    }
+    .mobile-header-action { width: 44px; height: 44px; }
+    .mobile-player-control { width: 44px; height: 44px; }
+    .mobile-nav-item { min-height: 56px; }
+
+    .context-selector > summary,
+    .dashboard-page .channel-select-wrap .form-select,
+    .playlist-import > summary,
+    .library-filter button,
+    .app-header-button {
+        min-height: 44px;
+    }
+
+    .search-box { min-height: 56px; }
+    .search-box input { min-height: 52px; scroll-margin-top: 76px; }
+    .search-box button { width: 44px; min-width: 44px; min-height: 44px; padding: 0; justify-content: center; }
+
+    .dashboard-page .add-track-btn,
+    .dashboard-page .remove-btn,
+    .queue-inline-action {
+        width: 40px !important;
+        min-width: 40px !important;
+        height: 40px !important;
+        min-height: 40px !important;
+    }
+    .queue-row-actions { gap: 6px !important; }
+    .queue-table tbody tr { grid-template-columns: 36px minmax(0, 1fr) 90px !important; }
+
+    .account-platform-switch,
+    .library-filter,
+    .platform-selector {
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+        overscroll-behavior-x: contain;
+    }
+    .account-platform-switch::-webkit-scrollbar,
+    .library-filter::-webkit-scrollbar,
+    .platform-selector::-webkit-scrollbar { display: none; }
+    .account-platform-switch .nav-item,
+    .library-filter button,
+    .platform-selector label { scroll-snap-align: start; }
+
+    .library-card-actions button,
+    .library-card-actions a { min-height: 36px; }
+    .account-profile-actions .btn,
+    .account-login-panel .btn,
+    .account-form-stack .form-control,
+    .account-form-stack .input-group-text { min-height: 44px; }
+
+    .context-popover,
+    .playlist-import-popover,
+    .mobile-more-sheet,
+    .queue-column .queue-panel {
+        overscroll-behavior: contain;
+    }
+
+    body.mobile-more-open::before {
+        content: "";
+        position: fixed;
+        z-index: 123;
+        inset: 0 0 calc(var(--mobile-nav-height) + env(safe-area-inset-bottom)) 0;
+        background: rgba(0, 0, 0, .32);
+        backdrop-filter: blur(1px);
+    }
+
+    .global-player .now-playing-copy { cursor: pointer; outline: none; }
+    .global-player .now-playing-copy:focus-visible {
+        border-radius: 11px;
+        box-shadow: 0 0 0 3px var(--app-accent-soft);
+    }
+
+    .global-player.mobile-expanded {
+        max-height: calc(var(--mobile-visual-height, 100dvh) - env(safe-area-inset-top) - var(--mobile-nav-height) - env(safe-area-inset-bottom) - 14px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+    .global-player.mobile-expanded .mobile-player-collapse {
+        width: 44px;
+        height: 44px;
+    }
+
+    body.mobile-keyboard-open .mobile-bottom-nav,
+    body.mobile-keyboard-open .global-player:not(.mobile-expanded) {
+        visibility: hidden;
+        pointer-events: none;
+        transform: translateY(120%);
+    }
+    body.mobile-keyboard-open .app-page-stage,
+    body.mobile-keyboard-open.dashboard-page .app-stage {
+        padding-bottom: 18px !important;
+    }
+    body.mobile-keyboard-open .context-popover,
+    body.mobile-keyboard-open .playlist-import-popover {
+        bottom: 8px;
+        max-height: calc(var(--mobile-visual-height, 100dvh) - 16px);
+    }
+
+    @media (hover: none) {
+        .library-card:hover { transform: none; }
+    }
+}
+
+@media (max-width: 820px) and (orientation: landscape) and (max-height: 560px) {
+    :root { --mobile-nav-height: 62px; --mobile-player-height: 68px; }
+
+    .mobile-app-header { min-height: 50px; padding-top: max(5px, env(safe-area-inset-top)); padding-bottom: 5px; }
+    .mobile-app-brand .brand-mark { width: 30px; height: 30px; }
+
+    .global-player.mobile-expanded {
+        display: grid;
+        grid-template-columns: minmax(150px, .72fr) minmax(260px, 1.28fr);
+        grid-template-rows: 1fr auto;
+        align-items: center;
+        gap: 12px 22px;
+        padding: 18px 24px;
+    }
+    .global-player.mobile-expanded .now-playing-copy {
+        grid-row: 1 / span 2;
+        justify-content: center;
+    }
+    .global-player.mobile-expanded .now-playing-art {
+        width: min(34vh, 190px);
+        max-width: 190px;
+    }
+    .global-player.mobile-expanded .player-center { align-self: end; }
+    .global-player.mobile-expanded .player-secondary-actions { align-self: start; }
+    .global-player.mobile-expanded .now-playing-text strong { font-size: 1rem; }
+
+    .queue-column .queue-panel { max-height: min(86dvh, 520px); }
+    .queue-list-wrap { max-height: 60dvh; }
+}
