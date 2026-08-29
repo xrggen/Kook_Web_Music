@@ -6,12 +6,14 @@ on:
       - 'windows/**'
       - 'Ubuntu/**'
       - 'scripts/check_platform_sync.py'
+      - 'scripts/check_secrets.py'
       - '.github/workflows/platform-sync.yml'
   pull_request:
     paths:
       - 'windows/**'
       - 'Ubuntu/**'
       - 'scripts/check_platform_sync.py'
+      - 'scripts/check_secrets.py'
       - '.github/workflows/platform-sync.yml'
 
 jobs:
@@ -19,6 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan repository and reachable history for secrets
+        run: python scripts/check_secrets.py
       - name: Verify Windows and Ubuntu stay aligned
         run: python scripts/check_platform_sync.py
       - name: Compile Python sources
