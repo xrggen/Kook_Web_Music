@@ -2,7 +2,7 @@
 
 ## 部署模型
 
-选择 `windows/` 或 `Ubuntu/` 作为运行目录。每个实例有独立的 Python 环境、`.env`、`Cookie/` 和日志；同一主机上的所有实例与本地音乐 API 共用系统 Node.js 和系统全局 npm 包。
+选择 `windows/` 或 `Ubuntu/` 作为运行目录。每个实例有独立的 Python 环境、`.env`、`Cookie/`、`data/` 和日志；同一主机上的所有实例与本地音乐 API 共用系统 Node.js 和系统全局 npm 包。
 
 仓库内不得存在 Node 可执行文件、Node API 源码或 `node_modules`。`run.py` 只接受项目目录外的系统 Node/npm。
 
@@ -100,17 +100,30 @@ python3 run.py
 | `BOT_TOKEN` | KOOK Bot Token | 必填 |
 | `APP_VERSION` | `/版本信息` 展示的构建标识 | `desktop-ui-v2` |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | 媒体工具路径或 PATH 命令名 | 自动探测 |
-| `MUSIC_API_BASE` | 网易云 API 地址或本地失败后的回退地址 | `http://localhost:3000` |
+| `MUSIC_API_BASE` | 网易云 API 地址 | `http://localhost:3000` |
 | `QQ_MUSIC_API_BASE` | QQ 音乐 API 地址 | `http://localhost:3200` |
 | `QQ_COOKIE_PATH` | QQ 兼容 Cookie | `./Cookie/qq_cookie.txt` |
 | `QQ_CREDENTIAL_PATH` | QQ 刷新元数据 | `./Cookie/qq_credential.json` |
 | `BILI_COOKIE_PATH` | Bilibili Cookie | `./Cookie/bili_cookie.txt` |
-| `ALLOWGROUP` / `ALLOWCHANNEL` / `ALLOWUSER` | 普通命令白名单，逗号分隔 | 留空不限制该维度 |
+| `ALLOWGROUP` / `ALLOWCHANNEL` / `ALLOWUSER` | Bot 普通命令白名单，逗号分隔 | 留空不限制该维度 |
 | `CMD_ALLOWUSER` | `/cmd` 独立用户白名单 | 留空即无人可用 |
-| `SECRET_KEY` | Flask session 密钥 | 必须为随机长字符串 |
-| `HOST` | Web 监听地址 | 本机建议 `127.0.0.1` |
+| `SECRET_KEY` | Flask 密钥 | 必须为随机长字符串 |
+| `HOST` | Web 监听地址 | 生产建议 `127.0.0.1` |
 | `PORT` | Web 端口 | `5000` |
 | `DEBUG` | Flask 调试 | 生产保持 `False` |
+
+Web 控制面鉴权：
+
+| 变量 | 用途 | 默认 |
+|---|---|---:|
+| `AUTH_DATABASE_PATH` | SQLite 控制面数据库 | `./data/kook_music.db` |
+| `AUTH_SESSION_IDLE_SECONDS` | Session 空闲过期 | `86400` |
+| `AUTH_SESSION_ABSOLUTE_SECONDS` | Session 绝对过期 | `604800` |
+| `AUTH_LOGIN_WINDOW_SECONDS` | 登录失败统计窗口 | `600` |
+| `AUTH_LOGIN_USER_FAILURES` | 同用户名窗口内失败阈值 | `5` |
+| `AUTH_LOGIN_IP_FAILURES` | 同来源 IP 窗口内失败阈值 | `20` |
+| `AUTH_COOKIE_SECURE` | Session/CSRF Cookie Secure | 本地 `false`；生产 HTTPS `true` |
+| `AUTH_TRUST_PROXY_HEADERS` | 是否信任 `X-Forwarded-For` | 默认 `false` |
 
 QQ 自动续期参数：
 
@@ -135,44 +148,111 @@ watchdog 可选参数：
 
 相对路径始终以当前平台目录为基准。
 
-## 迁移已有登录态
+## 首次启动与管理员初始化
 
-先停止源实例和目标实例，再按存在情况复制以下文件：
+首次启动时，如果 `AUTH_DATABASE_PATH` 指向的数据库中 `users` 表为空，会创建 Bootstrap 管理员：
+
+```text
+username = gen
+role = admin
+must_change_password = 1
+```
+
+初始明文密码不在 Git 文档中；项目所有者应从安全交付渠道获取。
+
+首次登录流程：
+
+1. 打开 `/login`；
+2. 使用 Bootstrap 凭据登录；
+3. 系统强制跳转 `/change-password`；
+4. 设置满足密码策略的新密码；
+5. 创建第二个管理员作为恢复路径；
+6. 再创建普通用户并按最小权限配置 Scope。
+
+不要通过删除数据库来恢复管理员密码，因为这样会同时丢失用户、Scope、Session 和审计记录。
+
+## 持久数据
+
+必须视为持久数据：
+
+```text
+.env
+Cookie/
+data/
+```
+
+`data/kook_music.db` 保存 Web 用户、Session、Scope、登录失败记录和审计。数据库启用 WAL，因此运行中可能同时存在：
+
+```text
+kook_music.db
+kook_music.db-wal
+kook_music.db-shm
+```
+
+这些文件都不进入 Git。
+
+## 迁移已有实例
+
+停止源实例和目标实例后再迁移。
+
+需要按存在情况复制：
 
 ```text
 Cookie/cookie.txt
 Cookie/qq_cookie.txt
 Cookie/qq_credential.json
 Cookie/bili_cookie.txt
+data/kook_music.db
 ```
 
-同步规则：
+迁移规则：
 
-1. 保持文件名和目标平台的 `Cookie/` 相对路径。
-2. 不复制日志、二维码图片、`.env`、`node_modules` 或全局 npm 包内配置。
-3. `.env` 中的 Token、白名单和端口逐项合并，不整文件覆盖。
-4. QQ 的 `qq_cookie.txt` 与 `qq_credential.json` 应作为同一账号状态一起迁移。
-5. 复制后限制文件权限，并在账号页面检查三个平台状态。
+1. 保持文件名和目标平台相对路径。
+2. `.env` 中 Token、白名单、端口和 `AUTH_*` 逐项合并，不整文件无脑覆盖。
+3. QQ 的 `qq_cookie.txt` 与 `qq_credential.json` 作为同一账号状态迁移。
+4. SQLite 建议在实例停止后复制，避免遗漏 WAL 中尚未 checkpoint 的事务。
+5. 若必须在线备份，使用 SQLite 一致性备份机制，不只复制主 `.db`。
+6. 复制后限制文件权限。
+7. 启动后检查登录、用户 Scope 和三个音乐平台状态。
+
+如果不迁移 `data/`，目标实例会失去现有 Web 用户与授权，并可能重新触发 Bootstrap 管理员初始化。
 
 ## 启动与验证
 
 在目标平台目录运行 `python run.py` 或 `python3 run.py`。日志应确认：
 
-- 解析到项目外的系统 Node 20+。
-- 从 `npm root --global` 找到两个固定包。
-- 网易云 3000、QQ 3200 和 Flask 端口就绪。
-- FFmpeg/ffprobe 可用。
-- Bot 进入运行状态。
+- 解析到项目外的系统 Node 20+；
+- 从 `npm root --global` 找到两个固定包；
+- 网易云 3000、QQ 3200 和 Flask 端口就绪；
+- FFmpeg/ffprobe 可用；
+- Bot 进入运行状态；
+- `data/` 可写，SQLite 可初始化/打开。
 
-基础探针：
+本地 Node 探针：
 
 ```bash
 curl http://127.0.0.1:3000/login/status
 curl http://127.0.0.1:3200/getSearchByKey/test
-curl http://127.0.0.1:5000/
-curl http://127.0.0.1:5000/api/system/status
-curl http://127.0.0.1:5000/api/debug
 ```
+
+Web 鉴权探针：
+
+```bash
+curl -i http://127.0.0.1:5000/login
+curl -i http://127.0.0.1:5000/api/system/status
+```
+
+预期：
+
+- `/login` 返回登录页面；
+- 未登录访问 `/api/system/status` 返回 `401`；
+- 未登录访问 `/dashboard` 等页面跳转登录；
+- Bootstrap 首次登录后被强制改密；
+- 普通用户无法进入 `/account`、`/status`、`/settings`、`/users`；
+- 普通用户只能看到 Scope 内的 Guild/Channel；
+- Admin 能完成账号、状态和用户管理。
+
+所有 POST/PUT/PATCH/DELETE 都要求 CSRF；用裸 `curl` 调管理写 API 时需要先建立 Session 并携带 CSRF Header。
 
 随后在 Web 控制台验证服务器/频道读取、三平台搜索、加入频道、入队、暂停、继续、跳过和离开。HTTP 200 只代表请求到达路由；还要检查 JSON 中的 `success`、`code` 或错误字段。
 
@@ -209,11 +289,11 @@ sudo systemctl status kook-web-music
 journalctl -u kook-web-music -f
 ```
 
-服务用户必须能读取系统 Node、全局 npm 包、项目目录、`.env` 和 `Cookie/`，并能写入平台日志。
+服务用户必须能读取系统 Node、全局 npm 包、项目目录、`.env` 和 `Cookie/`，并能写入 `data/` 与平台日志。
 
 ## 反向代理
 
-推荐令 Flask 只监听 `127.0.0.1`，由带 TLS 和认证的代理转发：
+推荐令 Flask 只监听 `127.0.0.1`，由 HTTPS 代理转发：
 
 ```nginx
 server {
@@ -231,20 +311,36 @@ server {
 }
 ```
 
-证书和认证配置取决于部署环境。不要直接暴露 3000/3200；完整边界见 [安全文档](security.md)。
+生产 `.env`：
+
+```env
+HOST=127.0.0.1
+AUTH_COOKIE_SECURE=true
+DEBUG=False
+```
+
+只有确认代理会覆盖并清洗客户端 `X-Forwarded-For` 时，才设置：
+
+```env
+AUTH_TRUST_PROXY_HEADERS=true
+```
+
+不要直接暴露 3000/3200。完整边界见 [security.md](security.md)。
 
 ## 升级与回滚
 
 升级：
 
-1. 停止服务，备份 `.env` 与 `Cookie/`。
-2. 拉取目标分支并确认工作区没有误覆盖的本地凭据。
-3. 重新安装有变化的 Python 依赖。
-4. 按文档固定版本更新系统全局 Node 包。
-5. 确认仓库内不存在 `node_modules` 或便携 Node。
-6. 启动并执行全部基础探针和实际播放检查。
+1. 停止服务。
+2. 备份 `.env`、`Cookie/`、`data/`。
+3. 拉取目标分支并确认没有误覆盖本地凭据。
+4. 重新安装有变化的 Python 依赖。
+5. 按文档固定版本更新系统全局 Node 包。
+6. 确认仓库内不存在 `node_modules` 或便携 Node。
+7. 阅读目标版本是否包含 SQLite Schema 变化。
+8. 启动并执行登录、Scope、账号和实际播放检查。
 
-回滚时切回已知可用提交，恢复与该提交兼容的 Python 依赖和全局 Node 包版本，再恢复备份的配置与凭据。不要把 Cookie 写回全局 npm 包目录。
+回滚时，除代码和 Python/Node 依赖外，还必须确认目标提交是否兼容当前 SQLite Schema。若涉及不兼容迁移，恢复升级前数据库备份，而不是让旧代码直接打开未知新 Schema。
 
 ## 端口冲突
 
