@@ -17,18 +17,18 @@ WINDOWS = ROOT / "windows"
 UBUNTU = ROOT / "Ubuntu"
 
 SHARED_FILES = (
-    ".env.example", "account_api.py", "api.py", "app.py", "bili_account_api.py", "bili_utils.py",
+    ".env.example", "account_api.py", "api.py", "app.py", "auth.py", "bili_account_api.py", "bili_utils.py",
     "config.py", "cookie_login.py", "cookie_login_captcha.py", "create_env.py",
     "kookvoice/__init__.py", "kookvoice/kookvoice.py", "kookvoice/requestor.py",
     "qq_account_api.py", "qq_credential.py", "qq_utils.py", "requirements.txt", "routes.py", "run.py",
     "runtime_health.py", "save_cookie.py", "service_watchdog.py",
-    "static/css/app.css", "static/css/dashboard.css", "static/css/mobile.css", "static/css/mobile-polish.css", "static/css/style.css", "static/css/theme.css",
-    "static/js/account.js", "static/js/app-ui.js", "static/js/bili_account.js", "static/js/dashboard-ui.js", "static/js/dashboard.js",
+    "static/css/app.css", "static/css/auth.css", "static/css/dashboard.css", "static/css/mobile.css", "static/css/mobile-polish.css", "static/css/style.css", "static/css/theme.css",
+    "static/js/account.js", "static/js/app-ui.js", "static/js/auth-client.js", "static/js/bili_account.js", "static/js/dashboard-ui.js", "static/js/dashboard.js",
     "static/js/library.js", "static/js/main.js", "static/js/mobile-ui.js", "static/js/qq_account.js", "static/js/settings.js",
-    "static/js/status.js", "static/js/theme-init.js",
-    "templates/_app_sidebar.html", "templates/account.html", "templates/dashboard.html", "templates/index.html",
-    "templates/library.html", "templates/settings.html", "templates/status.html", "templates/test.html",
-    "tests/test_stability.py", "tests/test_watchdog.py", "utils.py",
+    "static/js/status.js", "static/js/theme-init.js", "static/js/users.js",
+    "templates/_app_sidebar.html", "templates/account.html", "templates/change_password.html", "templates/dashboard.html", "templates/index.html",
+    "templates/library.html", "templates/login.html", "templates/settings.html", "templates/status.html", "templates/test.html", "templates/users.html",
+    "tests/test_auth.py", "tests/test_stability.py", "tests/test_watchdog.py", "utils.py",
 )
 
 def digest(path: Path) -> str:

@@ -1,4 +1,6 @@
 <script src="{{ url_for('static', filename='js/theme-init.js', v='1.2') }}"></script>
+<link href="{{ url_for('static', filename='css/auth.css', v='1.0') }}" rel="stylesheet">
+<script src="{{ url_for('static', filename='js/auth-client.js', v='1.0') }}"></script>
 
 <header class="mobile-app-header">
     <a class="mobile-app-brand" href="/dashboard" aria-label="KOOK Music">
@@ -8,98 +10,105 @@
             <strong id="mobile-header-title">{{ sidebar_title|default('播放') }}</strong>
         </span>
     </a>
+    {% if current_user and current_user.role == 'admin' %}
     <a class="mobile-header-action" href="/status" aria-label="系统状态" title="系统状态">
         <span class="nav-status-dot" id="mobile-health-dot" aria-hidden="true"></span>
         <i class="bi bi-hdd-rack"></i>
     </a>
+    {% else %}
+    <a class="mobile-header-action" href="/change-password" aria-label="账号安全" title="账号安全">
+        <i class="bi bi-person-lock"></i>
+    </a>
+    {% endif %}
 </header>
 
 <aside class="app-sidebar" aria-label="主导航">
     <a class="app-brand" href="/dashboard" aria-label="KOOK Music 播放控制台">
-        <span class="brand-mark" aria-hidden="true">
-            <i class="bi bi-soundwave"></i>
-        </span>
+        <span class="brand-mark" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
         <span>KOOK Music</span>
     </a>
 
     <nav class="app-nav">
         <a class="app-nav-item{% if active_page == 'play' %} active{% endif %}" href="/dashboard"{% if active_page == 'play' %} aria-current="page"{% endif %}>
-            <i class="bi bi-play-circle-fill"></i>
-            <span>播放</span>
+            <i class="bi bi-play-circle-fill"></i><span>播放</span>
         </a>
         <a class="app-nav-item{% if active_page == 'library' %} active{% endif %}" href="/library"{% if active_page == 'library' %} aria-current="page"{% endif %}>
-            <i class="bi bi-music-note-list"></i>
-            <span>音乐库</span>
+            <i class="bi bi-music-note-list"></i><span>音乐库</span>
         </a>
+        {% if current_user and current_user.role == 'admin' %}
         <a class="app-nav-item{% if active_page == 'account' %} active{% endif %}" href="/account"{% if active_page == 'account' %} aria-current="page"{% endif %}>
-            <i class="bi bi-person-fill"></i>
-            <span>音乐账号</span>
+            <i class="bi bi-person-fill"></i><span>音乐账号</span>
         </a>
-
         <span class="nav-separator" aria-hidden="true"></span>
-
         <a class="app-nav-item{% if active_page == 'status' %} active{% endif %}" href="/status"{% if active_page == 'status' %} aria-current="page"{% endif %}>
-            <i class="bi bi-hdd-rack-fill"></i>
-            <span>系统状态</span>
+            <i class="bi bi-hdd-rack-fill"></i><span>系统状态</span>
             <span class="nav-status-dot" id="sidebar-health-dot" aria-hidden="true"></span>
         </a>
-        <a class="app-nav-item{% if active_page == 'settings' %} active{% endif %}" href="/settings"{% if active_page == 'settings' %} aria-current="page"{% endif %}>
-            <i class="bi bi-gear-fill"></i>
-            <span>设置</span>
+        <a class="app-nav-item{% if active_page == 'users' %} active{% endif %}" href="/users"{% if active_page == 'users' %} aria-current="page"{% endif %}>
+            <i class="bi bi-people-fill"></i><span>用户管理</span>
         </a>
+        <a class="app-nav-item{% if active_page == 'settings' %} active{% endif %}" href="/settings"{% if active_page == 'settings' %} aria-current="page"{% endif %}>
+            <i class="bi bi-gear-fill"></i><span>设置</span>
+        </a>
+        {% endif %}
     </nav>
 
     {% if active_page == 'play' %}
     <div class="sidebar-session-card">
         <span class="session-icon" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
-        <div>
-            <small>当前播放目标</small>
-            <strong id="target-summary">请选择服务器与语音频道</strong>
-        </div>
+        <div><small>当前播放目标</small><strong id="target-summary">请选择服务器与语音频道</strong></div>
         <span class="signal-bars" aria-label="播放控制"><i></i><i></i><i></i></span>
     </div>
     {% else %}
     <div class="sidebar-session-card sidebar-page-card">
         <span class="session-icon" aria-hidden="true"><i class="bi {{ sidebar_icon|default('bi-grid-fill') }}"></i></span>
-        <div>
-            <small>当前页面</small>
-            <strong>{{ sidebar_title|default('KOOK Music') }}</strong>
-        </div>
+        <div><small>当前页面</small><strong>{{ sidebar_title|default('KOOK Music') }}</strong></div>
         <span class="page-indicator" aria-hidden="true"></span>
+    </div>
+    {% endif %}
+
+    {% if current_user %}
+    <div class="sidebar-auth-card">
+        <span class="sidebar-auth-avatar">{{ current_user.username[:1]|upper }}</span>
+        <div class="sidebar-auth-copy">
+            <strong>{{ current_user.username }}</strong>
+            <small>{{ '管理员' if current_user.role == 'admin' else '普通用户' }}</small>
+        </div>
+        <a href="/change-password" class="sidebar-auth-action" title="修改密码" aria-label="修改密码"><i class="bi bi-shield-lock"></i></a>
+        <form method="post" action="/logout" class="sidebar-auth-form">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <button type="submit" class="sidebar-auth-action" title="退出登录" aria-label="退出登录"><i class="bi bi-box-arrow-right"></i></button>
+        </form>
     </div>
     {% endif %}
 </aside>
 
 <nav class="mobile-bottom-nav" aria-label="移动端主导航">
-    <a class="mobile-nav-item{% if active_page == 'play' %} active{% endif %}" href="/dashboard"{% if active_page == 'play' %} aria-current="page"{% endif %}>
-        <i class="bi bi-play-circle-fill"></i><span>播放</span>
-    </a>
-    <a class="mobile-nav-item{% if active_page == 'library' %} active{% endif %}" href="/library"{% if active_page == 'library' %} aria-current="page"{% endif %}>
-        <i class="bi bi-music-note-list"></i><span>音乐库</span>
-    </a>
-    <a class="mobile-nav-item{% if active_page == 'account' %} active{% endif %}" href="/account"{% if active_page == 'account' %} aria-current="page"{% endif %}>
-        <i class="bi bi-person-fill"></i><span>账号</span>
-    </a>
-    <details class="mobile-more-menu{% if active_page in ['status', 'settings'] %} active{% endif %}">
-        <summary class="mobile-nav-item" aria-label="更多">
-            <i class="bi bi-grid-fill"></i><span>更多</span>
-        </summary>
+    <a class="mobile-nav-item{% if active_page == 'play' %} active{% endif %}" href="/dashboard"{% if active_page == 'play' %} aria-current="page"{% endif %}><i class="bi bi-play-circle-fill"></i><span>播放</span></a>
+    <a class="mobile-nav-item{% if active_page == 'library' %} active{% endif %}" href="/library"{% if active_page == 'library' %} aria-current="page"{% endif %}><i class="bi bi-music-note-list"></i><span>音乐库</span></a>
+    {% if current_user and current_user.role == 'admin' %}
+    <a class="mobile-nav-item{% if active_page == 'account' %} active{% endif %}" href="/account"{% if active_page == 'account' %} aria-current="page"{% endif %}><i class="bi bi-person-fill"></i><span>账号</span></a>
+    {% else %}
+    <a class="mobile-nav-item" href="/change-password"><i class="bi bi-person-lock"></i><span>我的</span></a>
+    {% endif %}
+    <details class="mobile-more-menu{% if active_page in ['status', 'settings', 'users'] %} active{% endif %}">
+        <summary class="mobile-nav-item" aria-label="更多"><i class="bi bi-grid-fill"></i><span>更多</span></summary>
         <div class="mobile-more-sheet">
             <div class="mobile-sheet-handle" aria-hidden="true"></div>
             <div class="mobile-more-heading">
-                <div><small>KOOK MUSIC</small><strong>更多</strong></div>
-                <span class="nav-status-dot" id="mobile-more-health-dot" aria-hidden="true"></span>
+                <div><small>{{ 'ADMIN' if current_user and current_user.role == 'admin' else 'USER' }}</small><strong>{{ current_user.username if current_user else '更多' }}</strong></div>
+                {% if current_user and current_user.role == 'admin' %}<span class="nav-status-dot" id="mobile-more-health-dot" aria-hidden="true"></span>{% endif %}
             </div>
-            <a class="mobile-more-link{% if active_page == 'status' %} active{% endif %}" href="/status">
-                <span><i class="bi bi-hdd-rack-fill"></i></span>
-                <div><strong>系统状态</strong><small>Bot、Gateway、FFmpeg 与运行会话</small></div>
-                <i class="bi bi-chevron-right"></i>
-            </a>
-            <a class="mobile-more-link{% if active_page == 'settings' %} active{% endif %}" href="/settings">
-                <span><i class="bi bi-gear-fill"></i></span>
-                <div><strong>设置</strong><small>主题、密度和动画偏好</small></div>
-                <i class="bi bi-chevron-right"></i>
-            </a>
+            {% if current_user and current_user.role == 'admin' %}
+            <a class="mobile-more-link{% if active_page == 'status' %} active{% endif %}" href="/status"><span><i class="bi bi-hdd-rack-fill"></i></span><div><strong>系统状态</strong><small>Bot、Gateway、FFmpeg 与运行会话</small></div><i class="bi bi-chevron-right"></i></a>
+            <a class="mobile-more-link{% if active_page == 'users' %} active{% endif %}" href="/users"><span><i class="bi bi-people-fill"></i></span><div><strong>用户管理</strong><small>角色、播放范围与登录状态</small></div><i class="bi bi-chevron-right"></i></a>
+            <a class="mobile-more-link{% if active_page == 'settings' %} active{% endif %}" href="/settings"><span><i class="bi bi-gear-fill"></i></span><div><strong>设置</strong><small>主题、密度和动画偏好</small></div><i class="bi bi-chevron-right"></i></a>
+            {% endif %}
+            <a class="mobile-more-link" href="/change-password"><span><i class="bi bi-shield-lock-fill"></i></span><div><strong>修改密码</strong><small>更新当前 Web 控制台密码</small></div><i class="bi bi-chevron-right"></i></a>
+            <form method="post" action="/logout" class="mobile-more-form">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                <button type="submit" class="mobile-more-link mobile-logout-button"><span><i class="bi bi-box-arrow-right"></i></span><div><strong>退出登录</strong><small>注销当前浏览器会话</small></div><i class="bi bi-chevron-right"></i></button>
+            </form>
         </div>
     </details>
 </nav>

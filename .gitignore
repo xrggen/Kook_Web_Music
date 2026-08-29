@@ -29,6 +29,14 @@ Ubuntu/debug.log
 *credentials*.json
 *secrets*.json
 
+# Web control-plane runtime databases
+**/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # Node
 node_modules/
 

@@ -6,13 +6,16 @@ try:
     from .kookvoice import kookvoice
     from .config import FFMPEG_PATH
     from .runtime_health import runtime_health
+    from .auth import register_auth
 except ImportError:
     from kookvoice import kookvoice
     from config import FFMPEG_PATH
     from runtime_health import runtime_health
+    from auth import register_auth
 
 logger = logging.getLogger(__name__)
 api_bp = Blueprint('api', __name__)
+
 
 @api_bp.route('/stats', methods=['GET'])
 def get_stats():
@@ -55,3 +58,9 @@ def get_stats():
             'api_status': 'error',
             'ffmpeg_status': 'error'
         })
+
+
+@api_bp.record_once
+def _install_control_plane_auth(state):
+    """在应用注册完现有路由后统一安装 Web 控制面鉴权。"""
+    register_auth(state.app)

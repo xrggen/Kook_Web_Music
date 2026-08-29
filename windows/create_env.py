@@ -44,7 +44,7 @@ QQ_CREDENTIAL_REFRESH_WINDOW=86400
 
 BILI_COOKIE_PATH=./Cookie/bili_cookie.txt
 
-# 权限白名单 — 留空表示不启用该维度过滤
+# KOOK Bot 指令权限白名单 — 留空表示不启用该维度过滤
 ALLOWGROUP=
 ALLOWCHANNEL=
 ALLOWUSER=
@@ -57,8 +57,19 @@ SECRET_KEY={token_urlsafe(48)}
 HOST=0.0.0.0
 PORT=5000
 DEBUG=False
+
+# Web控制面鉴权
+AUTH_DATABASE_PATH=./data/kook_music.db
+AUTH_SESSION_IDLE_SECONDS=86400
+AUTH_SESSION_ABSOLUTE_SECONDS=604800
+AUTH_LOGIN_WINDOW_SECONDS=600
+AUTH_LOGIN_USER_FAILURES=5
+AUTH_LOGIN_IP_FAILURES=20
+AUTH_COOKIE_SECURE=false
+AUTH_TRUST_PROXY_HEADERS=false
 """
 
 env_path.write_text(env_content, encoding="utf-8")
 print(f"✅ 已安全创建配置文件：{env_path}")
 print("⚠️ 该文件包含凭据，禁止提交到 Git。")
+print("ℹ️ 公网 HTTPS 部署请把 AUTH_COOKIE_SECURE 改为 true。")
