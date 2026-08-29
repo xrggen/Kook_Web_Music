@@ -1,4 +1,19 @@
-<script src="{{ url_for('static', filename='js/theme-init.js', v='1.0') }}"></script>
+<script src="{{ url_for('static', filename='js/theme-init.js', v='1.1') }}"></script>
+
+<header class="mobile-app-header">
+    <a class="mobile-app-brand" href="/dashboard" aria-label="KOOK Music">
+        <span class="brand-mark" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
+        <span>
+            <small>KOOK MUSIC</small>
+            <strong>{{ sidebar_title|default('播放') }}</strong>
+        </span>
+    </a>
+    <a class="mobile-header-action" href="/status" aria-label="系统状态" title="系统状态">
+        <span class="nav-status-dot" id="mobile-health-dot" aria-hidden="true"></span>
+        <i class="bi bi-hdd-rack"></i>
+    </a>
+</header>
+
 <aside class="app-sidebar" aria-label="主导航">
     <a class="app-brand" href="/dashboard" aria-label="KOOK Music 播放控制台">
         <span class="brand-mark" aria-hidden="true">
@@ -54,3 +69,37 @@
     </div>
     {% endif %}
 </aside>
+
+<nav class="mobile-bottom-nav" aria-label="移动端主导航">
+    <a class="mobile-nav-item{% if active_page == 'play' %} active{% endif %}" href="/dashboard"{% if active_page == 'play' %} aria-current="page"{% endif %}>
+        <i class="bi bi-play-circle-fill"></i><span>播放</span>
+    </a>
+    <a class="mobile-nav-item{% if active_page == 'library' %} active{% endif %}" href="/library"{% if active_page == 'library' %} aria-current="page"{% endif %}>
+        <i class="bi bi-music-note-list"></i><span>音乐库</span>
+    </a>
+    <a class="mobile-nav-item{% if active_page == 'account' %} active{% endif %}" href="/account"{% if active_page == 'account' %} aria-current="page"{% endif %}>
+        <i class="bi bi-person-fill"></i><span>账号</span>
+    </a>
+    <details class="mobile-more-menu{% if active_page in ['status', 'settings'] %} active{% endif %}">
+        <summary class="mobile-nav-item" aria-label="更多">
+            <i class="bi bi-grid-fill"></i><span>更多</span>
+        </summary>
+        <div class="mobile-more-sheet">
+            <div class="mobile-sheet-handle" aria-hidden="true"></div>
+            <div class="mobile-more-heading">
+                <div><small>KOOK MUSIC</small><strong>更多</strong></div>
+                <span class="nav-status-dot" id="mobile-more-health-dot" aria-hidden="true"></span>
+            </div>
+            <a class="mobile-more-link{% if active_page == 'status' %} active{% endif %}" href="/status">
+                <span><i class="bi bi-hdd-rack-fill"></i></span>
+                <div><strong>系统状态</strong><small>Bot、Gateway、FFmpeg 与运行会话</small></div>
+                <i class="bi bi-chevron-right"></i>
+            </a>
+            <a class="mobile-more-link{% if active_page == 'settings' %} active{% endif %}" href="/settings">
+                <span><i class="bi bi-gear-fill"></i></span>
+                <div><strong>设置</strong><small>主题、密度和动画偏好</small></div>
+                <i class="bi bi-chevron-right"></i>
+            </a>
+        </div>
+    </details>
+</nav>

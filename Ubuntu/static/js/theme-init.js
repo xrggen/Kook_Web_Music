@@ -1,17 +1,30 @@
 (() => {
     'use strict';
 
-    const STYLESHEET_ID = 'kook-theme-stylesheet';
     const STORAGE_KEY = 'kook.ui.theme';
     const media = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
+    const stylesheets = [
+        ['kook-theme-stylesheet', '/static/css/theme.css?v=1.0'],
+        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=1.0']
+    ];
 
-    function ensureStylesheet() {
-        if (document.getElementById(STYLESHEET_ID)) return;
-        const link = document.createElement('link');
-        link.id = STYLESHEET_ID;
-        link.rel = 'stylesheet';
-        link.href = '/static/css/theme.css?v=1.0';
-        document.head.appendChild(link);
+    function ensureResources() {
+        stylesheets.forEach(([id, href]) => {
+            if (document.getElementById(id)) return;
+            const link = document.createElement('link');
+            link.id = id;
+            link.rel = 'stylesheet';
+            link.href = href;
+            document.head.appendChild(link);
+        });
+
+        if (!document.getElementById('kook-mobile-script')) {
+            const script = document.createElement('script');
+            script.id = 'kook-mobile-script';
+            script.src = '/static/js/mobile-ui.js?v=1.0';
+            script.defer = true;
+            document.head.appendChild(script);
+        }
     }
 
     function readMode() {
@@ -29,7 +42,7 @@
     }
 
     function apply() {
-        ensureStylesheet();
+        ensureResources();
         const mode = readMode();
         const resolved = resolve(mode);
         const root = document.documentElement;
