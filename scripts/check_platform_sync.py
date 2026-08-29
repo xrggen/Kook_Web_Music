@@ -22,7 +22,7 @@ SHARED_FILES = (
     "kookvoice/__init__.py", "kookvoice/kookvoice.py", "kookvoice/requestor.py",
     "qq_account_api.py", "qq_credential.py", "qq_utils.py", "requirements.txt", "routes.py", "run.py",
     "runtime_health.py", "save_cookie.py", "service_watchdog.py",
-    "static/css/app.css", "static/css/dashboard.css", "static/css/mobile.css", "static/css/style.css", "static/css/theme.css",
+    "static/css/app.css", "static/css/dashboard.css", "static/css/mobile.css", "static/css/mobile-polish.css", "static/css/style.css", "static/css/theme.css",
     "static/js/account.js", "static/js/app-ui.js", "static/js/bili_account.js", "static/js/dashboard-ui.js", "static/js/dashboard.js",
     "static/js/library.js", "static/js/main.js", "static/js/mobile-ui.js", "static/js/qq_account.js", "static/js/settings.js",
     "static/js/status.js", "static/js/theme-init.js",
