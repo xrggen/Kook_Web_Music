@@ -1,11 +1,11 @@
-<script src="{{ url_for('static', filename='js/theme-init.js', v='1.1') }}"></script>
+<script src="{{ url_for('static', filename='js/theme-init.js', v='1.2') }}"></script>
 
 <header class="mobile-app-header">
     <a class="mobile-app-brand" href="/dashboard" aria-label="KOOK Music">
         <span class="brand-mark" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
         <span>
-            <small>KOOK MUSIC</small>
-            <strong>{{ sidebar_title|default('播放') }}</strong>
+            <small id="mobile-header-context">{% if active_page == 'play' %}选择播放目标{% else %}KOOK MUSIC{% endif %}</small>
+            <strong id="mobile-header-title">{{ sidebar_title|default('播放') }}</strong>
         </span>
     </a>
     <a class="mobile-header-action" href="/status" aria-label="系统状态" title="系统状态">
