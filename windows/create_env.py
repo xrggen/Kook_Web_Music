@@ -25,6 +25,7 @@ else:
 
 env_content = f"""# KOOK机器人配置
 BOT_TOKEN={bot_token}
+APP_VERSION=desktop-ui-v2
 
 # 媒体工具。Windows 默认使用随包 ffmpeg；Linux 默认使用系统 PATH。
 FFMPEG_PATH={ffmpeg_path}

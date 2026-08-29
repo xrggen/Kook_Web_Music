@@ -1,33 +1,24 @@
-# KOOK Music 项目文档
+# 项目文档
 
-本目录保存当前项目的结构化技术文档。根目录 `README.md` 继续承担项目简介、快速开始和版本历史；实现细节、部署边界和维护约束统一放在这里。
+文档只描述当前分支已经实现的行为，不保留版本流水账。根 [README](../README.md) 提供项目入口；完整事实按主题集中维护在本目录。
 
 ## 文档索引
 
-- [architecture.md](architecture.md) — 运行时架构、播放链路、线程/事件循环、状态边界与 Windows/Ubuntu 同步原则。
-- [deployment.md](deployment.md) — Windows / Ubuntu 安装、Node API、FFmpeg、环境变量、启动与升级流程。
-- [music-platforms.md](music-platforms.md) — 网易云、QQ 音乐、Bilibili 的接入方式、账号凭据和播放取链差异。
-- [web-api.md](web-api.md) — Web 页面与主要 HTTP API 的职责、参数边界和兼容说明。
-- [ui.md](ui.md) — 桌面/移动端 UI 架构、深浅色主题、响应式断点和前端资源职责。
-- [operations.md](operations.md) — 日志、健康检查、看门狗、故障恢复、账号失效和常见排障路径。
-- [development.md](development.md) — 开发规则、平台同步、测试、提交前检查和高风险修改边界。
-- [security.md](security.md) — 当前安全边界、凭据管理、网络暴露风险和部署建议。
+| 文档 | 负责内容 |
+|---|---|
+| [architecture.md](architecture.md) | 进程拓扑、播放会话、媒体管道、并发和恢复机制 |
+| [deployment.md](deployment.md) | Windows/Ubuntu 安装、配置、启动、升级、回滚和验证 |
+| [music-platforms.md](music-platforms.md) | 三平台接入方式、登录态与 QQ Credential 生命周期 |
+| [web-api.md](web-api.md) | 页面、HTTP API 分类和调用约束 |
+| [ui.md](ui.md) | 桌面/移动端共享 UI、主题和前端资源职责 |
+| [operations.md](operations.md) | 日志、健康检查、watchdog 与故障处理 |
+| [development.md](development.md) | 平台同步、实现约束和维护检查 |
+| [security.md](security.md) | 网络、凭据、命令执行与发布安全 |
 
-## 文档维护规则
+## 维护原则
 
-1. Windows 运行时是共享实现的权威来源；共享文件变更必须同步 Ubuntu，并通过 `scripts/check_platform_sync.py` 保持字节一致。
-2. 文档只描述已经存在于代码中的能力；规划项必须明确标记为“规划”或“未实现”。
-3. 新增 HTTP API、机器人命令、环境变量、持久化文件、后台线程或本地服务时，必须同步更新对应专题文档。
-4. 不在文档中记录真实 Token、Cookie、UID、服务器 ID、频道 ID、签名 URL 或其他凭据。
-5. 根 `README.md` 保持面向使用者；超过几段的实现细节优先迁移到 `/docs`。
-
-## 当前 UI 状态
-
-当前开发分支已经进入桌面与移动端共用模板的响应式架构：
-
-- 桌面端：左侧导航 + 主工作区 + 右侧队列 + 全局播放器。
-- 移动端：顶部上下文 + 单主视图 + 底部导航 + 迷你播放器 + Bottom Sheet 队列/菜单。
-- 主题：深色、浅色、跟随系统。
-- 移动端断点：`max-width: 820px`。
-
-移动端仍应继续做真机视觉与触控回归，但不再采用独立 `mobile.html` 或复制业务逻辑的方案。
+1. 同一个事实只在一份专题文档中完整说明，其他位置使用链接。
+2. Windows 和 Ubuntu 共用架构、配置语义和 Node 依赖；平台文档只写安装命令与系统差异。
+3. 新增服务、环境变量、持久化文件、页面、API 或 Bot 命令时，必须更新对应专题文档。
+4. 文档不得包含真实 Token、Cookie、账号、频道、签名 URL、内网地址或个人推广链接。
+5. 版本变化由 Git 提交和发布记录承载，不在运行文档中复制历史演进。

@@ -26,18 +26,41 @@ except ImportError:
     from service_watchdog import WatchdogConfig, WatchdogEvaluator
 
 APP_DIR = os.path.dirname(os.path.realpath(__file__))
+PROJECT_ROOT = os.path.dirname(APP_DIR)
 RUN_SCRIPT = os.path.realpath(__file__)
 ENV_FILE = os.path.join(APP_DIR, ".env")
 PYTHON_EXECUTABLE = os.path.realpath(sys.executable)
+MINIMUM_NODE_MAJOR = 20
+NETEASE_NODE_PACKAGE = "NeteaseCloudMusicApi"
+NETEASE_NODE_VERSION = "4.25.0"
+QQ_NODE_PACKAGE = "@sansenjian/qq-music-api"
+QQ_NODE_VERSION = "2.3.1"
+SYSTEM_NODE_INSTALL_COMMAND = (
+    f"npm install --global {NETEASE_NODE_PACKAGE}@{NETEASE_NODE_VERSION} "
+    f"{QQ_NODE_PACKAGE}@{QQ_NODE_VERSION}"
+)
 
 
-def _resolve_executable(name):
+def _path_is_within(path, parent):
+    try:
+        resolved_path = os.path.normcase(os.path.realpath(path))
+        resolved_parent = os.path.normcase(os.path.realpath(parent))
+        return os.path.commonpath((resolved_path, resolved_parent)) == resolved_parent
+    except (OSError, ValueError):
+        return False
+
+
+def _resolve_system_executable(name):
+    """只接受系统 PATH 中、项目目录之外的可执行文件。"""
     resolved = shutil.which(name)
-    return os.path.realpath(resolved) if resolved else None
+    if not resolved:
+        return None
+    resolved = os.path.realpath(resolved)
+    return None if _path_is_within(resolved, PROJECT_ROOT) else resolved
 
 
-NODE_EXECUTABLE = _resolve_executable("node")
-NPM_EXECUTABLE = _resolve_executable("npm")
+NODE_EXECUTABLE = _resolve_system_executable("node")
+NPM_EXECUTABLE = _resolve_system_executable("npm")
 
 # 配置基础日志
 logging.basicConfig(
@@ -69,6 +92,138 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)
 # 全局进程引用
 _music_api_process = None
 _qq_music_api_process = None
+_system_node_modules_cache = None
+
+
+def _system_node_version():
+    if NODE_EXECUTABLE is None:
+        return None, None
+    try:
+        result = subprocess.run(
+            [NODE_EXECUTABLE, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        version = result.stdout.strip().lstrip("v")
+        return version, int(version.split(".", 1)[0])
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        logger.error("[Node环境] 无法读取系统 Node 版本: %s", exc)
+        return None, None
+
+
+def _system_node_modules():
+    """读取系统 npm 的全局模块根，拒绝落在项目目录内的伪全局环境。"""
+    global _system_node_modules_cache
+    if _system_node_modules_cache is not None:
+        return _system_node_modules_cache or None
+    if NPM_EXECUTABLE is None:
+        logger.error("[Node环境] 未在系统 PATH 中找到 npm")
+        _system_node_modules_cache = ""
+        return None
+    try:
+        result = subprocess.run(
+            [NPM_EXECUTABLE, "root", "--global"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        module_root = os.path.realpath(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.error("[Node环境] 无法读取系统 npm 全局模块目录: %s", exc)
+        _system_node_modules_cache = ""
+        return None
+    if not module_root or _path_is_within(module_root, PROJECT_ROOT):
+        logger.error("[Node环境] npm 全局模块目录不得位于项目内: %s", module_root)
+        _system_node_modules_cache = ""
+        return None
+    _system_node_modules_cache = module_root
+    return module_root
+
+
+def _system_package_dir(package_name):
+    module_root = _system_node_modules()
+    if not module_root:
+        return ""
+    return os.path.realpath(os.path.join(module_root, *package_name.split("/")))
+
+
+def _project_node_modules():
+    """查找项目内遗留的 Node 依赖目录。"""
+    for current, directories, _ in os.walk(PROJECT_ROOT):
+        directories[:] = [
+            name for name in directories if name not in {".git", "__pycache__"}
+        ]
+        if "node_modules" in directories:
+            return os.path.join(current, "node_modules")
+    return None
+
+
+def _system_node_path():
+    """构造只暴露系统 Node/npm、过滤项目本地工具链的 PATH。"""
+    entries = [os.path.dirname(NODE_EXECUTABLE), os.path.dirname(NPM_EXECUTABLE)]
+    entries.extend(os.environ.get("PATH", "").split(os.pathsep))
+    result = []
+    seen = set()
+    for entry in entries:
+        if not entry:
+            continue
+        resolved = os.path.normcase(os.path.realpath(entry))
+        if _path_is_within(resolved, PROJECT_ROOT):
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        result.append(entry)
+    return os.pathsep.join(result)
+
+
+def _system_node_environment(api_dir, port, package_name):
+    """返回所有 Node 服务共用的系统全局运行环境。"""
+    if NODE_EXECUTABLE is None:
+        logger.error(
+            "[Node环境] 未在系统 PATH 中找到项目目录外的 node，无法启动 Node 服务"
+        )
+        return None
+
+    version, major = _system_node_version()
+    if major is None or major < MINIMUM_NODE_MAJOR:
+        logger.error(
+            "[Node环境] 需要系统 Node.js %d+，当前版本=%s",
+            MINIMUM_NODE_MAJOR,
+            version or "未知",
+        )
+        return None
+    module_root = _system_node_modules()
+    if not module_root:
+        return None
+    local_modules = _project_node_modules()
+    if local_modules:
+        logger.error(
+            "[Node环境] 检测到项目内自带 Node 环境: %s；请清理后重试",
+            local_modules,
+        )
+        return None
+    if not os.path.isfile(os.path.join(api_dir, "package.json")):
+        logger.error(
+            "[Node环境] 系统全局包 %s 未安装；请执行: %s",
+            package_name,
+            SYSTEM_NODE_INSTALL_COMMAND,
+        )
+        return None
+
+    child_env = os.environ.copy()
+    child_env["PORT"] = str(port)
+    child_env["PATH"] = _system_node_path()
+    child_env["NODE"] = NODE_EXECUTABLE
+    child_env["NODE_PATH"] = module_root
+    child_env["KOOK_NODE_RUNTIME"] = "system"
+    child_env["KOOK_NODE_MODULES"] = module_root
+    child_env.pop("npm_execpath", None)
+    child_env.pop("npm_node_execpath", None)
+    return child_env
 
 
 def _process_belongs_to_dir(pid: int, expected_dir: str) -> bool:
@@ -174,15 +329,11 @@ def _terminate_process_tree(process, label):
 
 
 def _api_dir():
-    return os.path.realpath(
-        os.path.join(
-            APP_DIR, "NeteaseCloudMusicApi", "NeteaseCloudMusicApiBackup-main"
-        )
-    )
+    return _system_package_dir(NETEASE_NODE_PACKAGE)
 
 
 def _qq_api_dir():
-    return os.path.realpath(os.path.join(APP_DIR, "qq-music-api"))
+    return _system_package_dir(QQ_NODE_PACKAGE)
 
 
 def start_music_api():
@@ -190,26 +341,27 @@ def start_music_api():
     global _music_api_process
     api_dir = _api_dir()
     if not os.path.isdir(api_dir):
-        logger.warning("本地音乐API目录不存在，跳过启动: %s", api_dir)
+        logger.warning("系统网易云音乐API包不存在，跳过启动: %s", api_dir)
+        logger.warning("请执行: %s", SYSTEM_NODE_INSTALL_COMMAND)
         logger.warning("音乐API将使用 .env 中配置的 MUSIC_API_BASE")
         return
-    if NODE_EXECUTABLE is None:
-        logger.error("[API启动] 未在 PATH 中找到 node.exe，无法启动本地音乐API")
+    child_env = _system_node_environment(api_dir, 3000, NETEASE_NODE_PACKAGE)
+    if child_env is None:
         return
 
     # 清理占用本服务端口的残留进程（Windows），避免误杀其他Node应用
     if sys.platform == "win32":
         _kill_port(3000, api_dir)
 
-    logger.info("正在启动本地音乐API服务: %s", api_dir)
-    api_log = os.path.join(api_dir, "api_output.log")
+    logger.info("正在启动系统网易云音乐API服务: %s", api_dir)
+    api_log = os.path.join(APP_DIR, "netease_api_output.log")
     log_file = open(api_log, "w")
 
-    # 构造子进程环境变量：强制 PORT=3000 避免继承 .env 中的 PORT=5000
-    child_env = os.environ.copy()
-    child_env["PORT"] = "3000"
-
-    logger.info("[API启动] 拉起 Node 进程 (PORT=3000)...")
+    logger.info(
+        "[API启动] 使用系统 Node=%s，全局模块=%s (PORT=3000)",
+        NODE_EXECUTABLE,
+        _system_node_modules(),
+    )
     if sys.platform == "win32":
         _music_api_process = subprocess.Popen(
             [NODE_EXECUTABLE, os.path.join(api_dir, "app.js")],
@@ -291,51 +443,32 @@ def start_qq_music_api():
     global _qq_music_api_process
     api_dir = _qq_api_dir()
     if not os.path.isdir(api_dir):
-        logger.warning("QQ音乐API目录不存在，跳过启动: %s", api_dir)
+        logger.warning("系统QQ音乐API包不存在，跳过启动: %s", api_dir)
+        logger.warning("请执行: %s", SYSTEM_NODE_INSTALL_COMMAND)
         return
     if not os.path.isfile(os.path.join(api_dir, "package.json")):
         logger.warning("QQ音乐API缺少package.json，可能未安装依赖")
         return
-    if NODE_EXECUTABLE is None:
-        logger.error("[QQ-API启动] 未在 PATH 中找到 node.exe，无法启动QQ音乐API")
+    dist_main = os.path.join(api_dir, "dist", "app.js")
+    if not os.path.isfile(dist_main):
+        logger.error("系统QQ音乐API包缺少运行产物: %s", dist_main)
+        return
+    child_env = _system_node_environment(api_dir, 3200, QQ_NODE_PACKAGE)
+    if child_env is None:
         return
     if sys.platform == "win32":
         _kill_port(3200, api_dir)
 
-    logger.info("正在启动QQ音乐API服务: %s", api_dir)
-    api_log = os.path.join(api_dir, "api_output.log")
+    logger.info("正在启动系统QQ音乐API服务: %s", api_dir)
+    api_log = os.path.join(APP_DIR, "qq_api_output.log")
     log_file = open(api_log, "w")
-
-    child_env = os.environ.copy()
-    child_env["PORT"] = "3200"
-
-    dist_main = os.path.join(api_dir, "dist", "app.js")
-    if not os.path.isfile(dist_main):
-        logger.info("[QQ-API启动] 未找到编译产物，执行 npm run build...")
-        if NPM_EXECUTABLE is None:
-            logger.error("[QQ-API启动] 未在 PATH 中找到 npm，无法构建QQ音乐API")
-            log_file.close()
-            return
-        try:
-            build_result = subprocess.run(
-                [NPM_EXECUTABLE, "run", "build"],
-                cwd=api_dir,
-                env=child_env,
-                capture_output=True,
-                timeout=60,
-            )
-            if build_result.returncode != 0:
-                stderr_tail = build_result.stderr.decode("utf-8", errors="replace")[-300:]
-                logger.error("[QQ-API启动] 编译失败: %s", stderr_tail)
-                log_file.close()
-                return
-        except Exception as e:
-            logger.error("[QQ-API启动] 编译异常: %s", e)
-            log_file.close()
-            return
     cmd = [NODE_EXECUTABLE, os.path.realpath(dist_main)]
 
-    logger.info("[QQ-API启动] 拉起 Node 进程 (PORT=3200)...")
+    logger.info(
+        "[QQ-API启动] 使用系统 Node=%s，全局模块=%s (PORT=3200)",
+        NODE_EXECUTABLE,
+        _system_node_modules(),
+    )
     if sys.platform == "win32":
         _qq_music_api_process = subprocess.Popen(
             cmd,

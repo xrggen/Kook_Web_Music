@@ -789,7 +789,14 @@ def register_routes(app, bot, socketio=None):
         """测试缓存功能"""
         try:
             import threading
-            from kookvoice.kookvoice import audio_cache
+            try:
+                from kookvoice.kookvoice import audio_cache
+            except ImportError:
+                return jsonify({
+                    'success': True,
+                    'message': '当前版本未启用音频缓存',
+                    'cache_count': 0,
+                })
             test_file = "test_audio.mp3"
 
             def run_test_preload():

@@ -1,78 +1,69 @@
 # Web 页面与 HTTP API
 
-本文描述当前 Web 层的职责边界。具体字段以代码为准；新增或修改接口时应同步更新此文档。
-
-## 1. 页面路由
+## 页面
 
 | 路径 | 作用 |
 |---|---|
-| `/` | 进入应用控制台体验 |
+| `/` | 应用入口 |
 | `/dashboard` | 播放控制台 |
 | `/library` | 三平台音乐库 |
 | `/account` | 三平台账号中心 |
-| `/status` | 运行状态 |
-| `/settings` | 浏览器端界面偏好 |
+| `/status` | 运行状态与日志 |
+| `/settings` | 浏览器端 UI 偏好 |
+| `/monitor` | Ubuntu 监控页；Windows 返回 404 |
 
-## 2. 服务器与频道
+桌面与移动端使用同一组页面和 API，不提供 `/api/mobile/*` 分支。
 
-- `GET /api/guilds` — 获取 Bot 可见服务器。
-- `GET /api/channels?guild_id=...` — 获取服务器下可用语音频道。
-- `GET /api/channels/active?guild_id=...` — 查询活跃播放频道。
-- `POST /api/join` — 加入指定语音频道。
-- `POST /api/leave` — 离开指定语音频道。
+## 服务器与频道
 
-播放会话主键是 `channel_id`，调用方不应只依赖 guild 级状态。
+- `GET /api/guilds`：Bot 可见服务器。
+- `GET /api/channels?guild_id=...`：服务器中的语音频道。
+- `GET /api/channels/active?guild_id=...`：活跃播放频道。
+- `POST /api/join`：加入语音频道。
+- `POST /api/leave`：离开语音频道。
 
-## 3. 搜索与入队
+播放状态以 `channel_id` 为主键。涉及控制或队列的请求应携带明确频道上下文。
+
+## 搜索、歌单与播放
 
 - `GET /api/search?keyword=...&platform=wy|qq|bili`
+- `POST /api/play`
 - `POST /api/playlist/add`
-- `POST /api/play` — 兼容旧版单曲入口。
-- `POST /api/playlist` — 导入歌单。
+- `POST /api/playlist`
+- `GET /api/playlist/current?guild_id=...&channel_id=...`
+- `POST /api/playlist/promote`
+- `POST /api/remove`
+- `POST /api/clear`
+- `POST /api/playlist/repeat`
 
-Bilibili 搜索还支持 BV 号直解析语义；平台差异由后端适配层处理，前端不应自己拼播放 URL。
-
-## 4. 播放控制
+控制接口：
 
 - `POST /api/pause`
 - `POST /api/resume`
 - `POST /api/skip`
 - `POST /api/stop`
 - `POST /api/seek`
-- `POST /api/playlist/repeat`
-- `GET /api/playlist/current?guild_id=...&channel_id=...`
-- `POST /api/remove`
-- `POST /api/clear`
-- `POST /api/playlist/promote`
 
-### 顶歌
+`/api/playlist/promote` 将等待队列中的指定索引移到下一首，不打断当前歌曲。
 
-`POST /api/playlist/promote` 将等待队列中指定索引的歌曲移动到队首，也就是“下一首”，不会打断当前正在播放的歌曲。
-
-请求核心字段：
-
-```json
-{
-  "channel_id": "...",
-  "index": 2
-}
-```
-
-前端可能同时发送 `guild_id` 作为上下文，但当前队列操作核心以 `channel_id` 为准。
-
-## 5. 网易云账号
-
-常用接口：
+## 网易云账号
 
 - `GET /api/account/status`
-- 扫码创建/轮询相关接口
-- 手机验证码登录接口
+- `GET /api/account/detail`
+- `GET /api/account/level`
+- `GET /api/account/subcount`
+- `GET /api/account/playlists`
+- `POST /api/account/qr/key`
+- `POST /api/account/qr/create`
+- `POST /api/account/qr/check`
+- `POST /api/account/cellphone/captcha`
+- `POST /api/account/cellphone/verify`
+- `POST /api/account/cellphone/login`
+- `POST /api/account/signin`
 - `POST /api/account/cookie`
 - `POST /api/account/logout`
 
-## 6. QQ 音乐账号
-
-常用接口：
+## QQ 音乐账号
 
 - `GET /api/qq/account/status`
 - `POST /api/qq/account/qr/create`
@@ -83,9 +74,9 @@ Bilibili 搜索还支持 BV 号直解析语义；平台差异由后端适配层�
 - `POST /api/qq/account/refresh`
 - `POST /api/qq/account/logout`
 
-`/refresh` 是运维/排障入口，日常续期由 Credential Manager 自动完成。
+`/refresh` 是手工续期入口；后台 Credential Manager 负责日常检查。
 
-## 7. Bilibili 账号
+## Bilibili 账号
 
 - `GET /api/bili/account/status`
 - `POST /api/bili/account/qr/create`
@@ -95,23 +86,27 @@ Bilibili 搜索还支持 BV 号直解析语义；平台差异由后端适配层�
 - `POST /api/bili/account/cookie`
 - `POST /api/bili/account/logout`
 
-这些 Flask 路由内部直接调用 Bilibili 公网 API，不经过本地 Node 服务。
+这些路由由 Python 直接调用 Bilibili 公网 API。
 
-## 8. 状态与运维
+## 状态与运维
 
-- `GET /api/debug` — Bot/loop/gateway/队列等轻量运行信息。
-- 其他系统状态、日志、清理和兼容运维接口位于现有 routes/api 模块。
+- `GET /api/stats`：播放数量与组件摘要。
+- `GET /api/system/status`：主机、进程和播放统计。
+- `GET /api/debug`：Bot、事件循环、网关和队列摘要。
+- `GET /api/logs`：按类型读取日志。
+- `POST /api/logs/clear`：清空指定日志。
+- `POST /api/system/cleanup`：进程内清理。
+- `POST /api/system/cleanup/config`：调整清理阈值。
+- `GET /api/terminal/output`：读取运行日志增量。
+- `POST /api/terminal/command`：执行受首命令名单限制的 shell 字符串。
+- `POST /api/cache/test`：兼容探针；未启用音频缓存时返回成功说明。
 
-前端“系统状态”页优先使用轻量健康数据，不应为了刷新一个状态灯频繁拉取大日志。
+终端命令、日志清理和账号退出属于高风险写操作。当前 Web 层没有完整的多用户认证边界，不得直接暴露公网，详见 [security.md](security.md)。
 
-## 9. 前端调用约束
+## 请求与响应约束
 
-1. 异步搜索/切换频道要防止旧请求晚到覆盖新状态。
-2. 用户输入或平台返回的歌曲名使用 `textContent` 等安全方式写 DOM。
-3. 不在浏览器保存音乐平台 Cookie。
-4. 播放 URL、签名参数、完整 Cookie 不应出现在普通 UI 或成功消息中。
-5. 移动端与桌面端复用同一个 API，不建立 `/api/mobile/*` 分叉。
-
-## 10. 安全提示
-
-当前 Web API 的访问控制边界与部署方式强相关。不要因为“仅是控制台 API”就默认可安全暴露公网。特别是账号、运维和终端类接口需要额外注意，详见 [security.md](security.md)。
+1. 具体 JSON 字段以路由实现为准；调用方必须同时检查 HTTP 状态与 `success`、`code`、`error`。
+2. 异步搜索、服务器和频道切换必须丢弃过期响应，避免旧结果覆盖新上下文。
+3. 用户输入和平台文本通过 `textContent` 等安全方式写入 DOM。
+4. Cookie、Credential 和完整签名播放 URL不得返回普通 UI。
+5. 修改现有字段时同步更新 Web、Bot 调用点和本文。

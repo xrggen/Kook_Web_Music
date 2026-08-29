@@ -1,131 +1,84 @@
-# 开发与维护约束
+# 开发与维护
 
-## 1. 分支与实现原则
+## 平台一致性
 
-当前共享运行时采用 Windows 主线：先在 `windows/` 形成正确实现，再同步 `Ubuntu/` 对应共享文件。不要让两个平台长期形成不同业务版本。
-
-本项目当前开发流程允许直接向工作分支提交；是否创建 PR、跑 CI 或做发布审计由具体任务决定。
-
-## 2. 平台同步
-
-执行：
+`windows/` 与 `Ubuntu/` 是同一应用的两个部署目录，不是两套产品。共享文件由 `scripts/check_platform_sync.py` 管理：
 
 ```bash
 python scripts/check_platform_sync.py
 ```
 
-脚本检查共享文件是否字节一致。新增共享文件时必须加入 `SHARED_FILES`。
+共享范围包括 Python 业务、路由、Bot 命令、模板、静态资源、配置模板和测试。平台差异只允许出现在 FFmpeg 来源、系统路径、服务管理和平台说明。
 
-适合保持共享的内容：
+修改共享文件时应在同一变更中同步两端。不要让一个平台长期携带修复而另一个平台保持不同逻辑。
 
-- Python 业务逻辑。
-- Flask 路由。
-- KOOK Bot 命令。
-- 前端模板、CSS、JS。
-- 测试。
+## Node 依赖政策
 
-允许平台差异：
+- 只支持系统 PATH 中的 Node.js 20+ 与 npm。
+- Node API 从 `npm root --global` 加载固定版本。
+- 仓库不保存 Node API 源码、Node 可执行文件或 `node_modules`。
+- Python 启动器不执行 npm 安装或构建。
+- 用户 Cookie 不写入全局 npm 包目录。
 
-- FFmpeg 二进制和系统路径。
-- 安装/打包脚本。
-- 平台专属部署文档。
+修改 Node 启动逻辑时必须同时更新根 README、部署、架构和两个平台入口。
 
-## 3. 并发状态修改
+## 并发与状态
 
-任何修改播放队列、当前播放状态、处理器注册表的代码都必须尊重 `kookvoice.state_lock` 和现有所有权模型。
+播放状态以 `channel_id` 为键，修改队列、当前播放或处理器注册表时必须使用 `kookvoice.state_lock` 和所有权校验。
 
-禁止：
-
-- 在锁外直接修改共享队列后假设不会竞争。
-- 旧 PlayHandler 退出时无条件清理当前频道状态。
-- 在锁内执行长时间公网请求。
-
-推荐模式：
+推荐顺序：
 
 ```text
-锁内读取标记/状态
-   ↓
-锁外网络或媒体操作
-   ↓
+锁内读取状态与操作标识
+    ↓
+锁外执行网络或媒体 I/O
+    ↓
 锁内确认状态仍属于当前操作
-   ↓
-回填结果
+    ↓
+提交结果
 ```
 
-## 4. 媒体进程
+禁止在锁内执行长时间公网请求，也禁止旧处理器退出时无条件清理新会话。
 
-创建 FFmpeg/ffprobe 时：
+## 媒体子进程
 
-- 使用参数数组，避免 shell。
-- 保存进程引用。
-- 超时/取消/异常路径都要回收。
-- 等待进程结束并处理管道。
-- Windows 不得仅凭进程名或端口误杀其他应用。
+- 使用参数数组和 `shell=False`。
+- 创建时保存进程引用和归属。
+- 正常、超时、取消和异常路径都执行幂等回收。
+- 等待进程退出并关闭管道。
+- 不按进程名或端口误杀其他应用。
 
-## 5. 前端修改
+## 前端
 
-核心原则：桌面/移动端共用业务逻辑。
+- 桌面和移动端共用模板、API 和业务 JS。
+- 移动差异放入 `mobile.css`、`mobile-polish.css` 和 `mobile-ui.js`。
+- 外部数据默认通过 `textContent` 写入 DOM。
+- 异步请求使用序列或上下文校验。
+- 新控件提供可访问名称和足够触控区域。
 
-- 不复制 `dashboard.js` 为 `mobile-dashboard.js`。
-- 移动端特有的布局/Sheet 行为放在 `mobile.css`、`mobile-polish.css`、`mobile-ui.js`。
-- DOM 中展示外部数据优先 `textContent`。
-- 异步搜索、频道切换继续使用请求序列/上下文校验，防止旧响应覆盖新状态。
-- 新增触控按钮应有 `aria-label`，命中区域优先达到 44px。
+## 账号与 API
 
-## 6. 账号与凭据
+凭据只保存在服务端受忽略文件中，不写日志、前端存储或 API 普通响应。修改 QQ Credential Manager 时保持 `qq_cookie.txt` 与 `qq_credential.json` 的一致写入和迁移能力。
 
-凭据文件只在服务端：
+修改 HTTP API 时：
 
-- 不写到 localStorage。
-- 不提交 Git。
-- 不把完整值放进日志。
+1. 查找 Web、Bot 和脚本调用点。
+2. 保持现有字段兼容，或提供明确迁移。
+3. 同步两个平台。
+4. 更新 [web-api.md](web-api.md) 与安全说明。
 
-修改 QQ Credential Manager 时必须保留旧 `qq_cookie.txt` 兼容路径，除非一次性完成所有调用点迁移并有明确升级策略。
+## 检查
 
-## 7. API 兼容性
-
-修改已有 HTTP API 时优先向后兼容。若必须破坏字段：
-
-1. 查找 Web 和 Bot 两侧调用点。
-2. 更新文档。
-3. 给出迁移路径。
-4. 避免只修 Web、遗漏 KOOK 命令链路。
-
-## 8. 推荐检查
-
-按修改范围选择：
+按变更范围执行：
 
 ```bash
 python -m compileall windows Ubuntu
 python scripts/check_platform_sync.py
+python scripts/check_secrets.py
 ```
 
-以及对应单元测试，例如：
+单元测试位于两个平台的 `tests/`。前端变更还应覆盖桌面/移动、深色/浅色、窄屏、横屏、软键盘和播放器/队列交互。
 
-```bash
-python -m unittest windows.tests.test_stability
-python -m unittest windows.tests.test_watchdog
-python -m unittest windows.tests.test_qq_credential
-```
+## 文档
 
-前端修改还需要浏览器回归：
-
-- 桌面深色/浅色。
-- 移动端深色/浅色。
-- 390px 级手机宽度。
-- 横屏。
-- 软键盘。
-- 队列 Sheet 和全屏播放器。
-
-## 9. 文档更新
-
-以下变化视为“必须更新 `/docs`”：
-
-- 新增/删除本地服务。
-- 新增环境变量。
-- 新增持久化文件。
-- 新增一级页面。
-- 新增重要 API 或 KOOK 命令。
-- 修改平台接入方式。
-- 修改播放线程、锁、watchdog 或恢复流程。
-- 修改移动端断点或主题机制。
+文档只维护当前实现。新增或删除服务、变量、文件、页面、接口、命令、线程、锁或恢复流程时，更新对应专题文档；发布演进交由 Git 与发布系统记录，不复制到 README。

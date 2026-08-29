@@ -1,119 +1,74 @@
-# 音乐平台接入与账号凭据
+# 音乐平台与账号凭据
 
-## 1. 三平台不是同一种接入方式
+## 接入总览
 
-| 平台 | 搜索/数据入口 | 账号凭据 | 本地服务 |
+| 平台 | 数据与播放入口 | 登录态 | 本地服务 |
 |---|---|---|---|
-| 网易云 | 本地 NeteaseCloudMusicApi | `cookie.txt` | Node，默认 3000 |
-| QQ 音乐 | 本地 qq-music-api + Python 直连签名接口 | `qq_cookie.txt` + `qq_credential.json` | Node，默认 3200 |
-| Bilibili | Python 直接调用 Bilibili REST/DASH | `bili_cookie.txt`（主要为 SESSDATA） | 无 |
+| 网易云音乐 | Python 适配器调用 NeteaseCloudMusicApi | `Cookie/cookie.txt` | 系统 Node，全局包，3000 |
+| QQ 音乐 | qq-music-api 与 Python 签名接口 | `qq_cookie.txt` + `qq_credential.json` | 系统 Node，全局包，3200 |
+| Bilibili | Python 直连 REST 与 DASH | `Cookie/bili_cookie.txt` | 无 |
 
-不要为了代码形式统一而强行把三者改成同一种代理层。应以稳定性、协议生命周期和维护成本为优先。
+三平台共用搜索、队列和播放器模型，但保留各自的协议与凭据生命周期。系统全局 Node 包只提供 API 运行代码，不保存项目用户 Cookie。
 
-## 2. 网易云音乐
+## 网易云音乐
 
-### 搜索与播放
+`utils.py` 负责搜索、歌单和播放 URL 解析。支持 Web 扫码、手机验证码和手工 Cookie 登录，账号接口写入当前平台的 `Cookie/cookie.txt`。
 
-`utils.py` 负责主要搜索、歌单和播放 URL 解析。大歌单使用延迟标记，降低一次性请求数量。
+歌单条目先以 `PLAYLIST_SONG` 标记入队，接近播放时按批次解析 URL，避免一次性请求全部歌曲。
 
-### 登录
+本地 API 默认由 `run.py` 在 3000 端口启动。启动失败时可使用 `MUSIC_API_BASE` 指定的地址，但生产环境不应依赖来源不明的公网代理。
 
-支持：
+## QQ 音乐
 
-- Web 扫码。
-- 手机验证码。
-- 手工 Cookie。
+`qq_utils.py` 负责搜索、公开歌单、播放取链和用户歌单；`qq_account_api.py` 负责登录与账号接口；`qq_credential.py` 管理登录态续期。
 
-凭据继续保存在服务端 Cookie 文件，不写入浏览器 localStorage。
+两个凭据文件组成同一账号状态：
 
-## 3. QQ 音乐
+- `qq_cookie.txt`：兼容搜索、播放和已有调用点的 Cookie 串。
+- `qq_credential.json`：uin、musickey、refresh token/key、access token、到期与刷新元数据。
 
-### 搜索与播放
+凭据机制遵循以下规则：
 
-QQ 音乐同时使用本地 `qq-music-api` 和部分 Python 侧签名 API。公开歌单等场景可能不依赖登录 Cookie；会员/个人数据和部分取链能力则依赖账号状态。
+1. 只有 `qq_cookie.txt` 时可以自动迁移出 Credential 元数据。
+2. 完整 refresh 凭据优先使用 refresh-token 路线；仅有 musickey 时走兼容刷新。
+3. 刷新过程使用进程内锁，成功后原子写回两个文件。
+4. 单次刷新失败不会立即删除仍可用的 Cookie。
+5. 短寿命 access token 到期不等于整个 QQ 登录态失效。
+6. Python 在请求时携带 Cookie，不写入 `npm root --global` 下的包配置。
 
-### Credential Manager
+后台按照 `QQ_CREDENTIAL_*` 环境变量定时检查。`POST /api/qq/account/refresh` 只用于手工排障。账号撤销、设备风控或平台协议变化仍可能要求重新扫码。
 
-当前登录生命周期不再只是静态保存 Cookie。
+## Bilibili
 
-核心文件：
+`bili_utils.py` 使用共享 requests Session 访问 Bilibili 首页和 API，获取必要的设备 Cookie，并支持：
 
-```text
-qq_cookie.txt       兼容现有播放/搜索代码的 Cookie 串
-qq_credential.json  Credential 生命周期数据
-```
+- 二维码登录与 SESSDATA 验证。
+- 用户资料和收藏夹。
+- 搜索、BV 号直解析与分 P。
+- DASH 音频 URL 解析。
 
-Credential 中可能包含：
+Bilibili 不经过本地 Node 服务。带复杂查询参数的 DASH URL 必须作为参数数组传给 FFmpeg，不能先交给 shell 解释。
 
-- uin / musicid
-- qqmusic_key / qm_keyst / musickey
-- refresh_token
-- refresh_key
-- access_token
-- openid / unionid
-- login_type
-- expiry / refresh metadata
+## 队列元数据
 
-### 自动续期原则
+队列和 UI 优先使用显式的 `title`、`artist` 以及兼容字段。播放 URL 不作为标题回退，避免临时签名、账号参数或哈希出现在页面和日志中。
 
-1. 旧 `qq_cookie.txt` 可自动迁移。
-2. 有完整 refresh 凭据时优先走 refresh-token 路线。
-3. 仅有 musickey 时使用兼容刷新 fallback。
-4. 刷新成功必须原子写回新的 Credential 与兼容 Cookie。
-5. 刷新使用锁，避免多个请求同时刷新同一账号。
-6. 单次刷新失败不立即退出登录；旧凭据仍有效时继续使用。
-7. 不再把短寿命 access token 的过期等同于整个 QQ 音乐登录态失效。
+三平台的延迟标记只存在于队列内部：
 
-账号页面可通过 `POST /api/qq/account/refresh` 手工触发续期，用于排障；正常运行由后台机制处理。
+- `PLAYLIST_SONG:<id>:<name>:<artist>`
+- `QQ_PLAYLIST_SONG:<songmid>:<name>:<artist>`
+- `BILI_PLAYLIST_SONG:<bvid>:<page>:<name>:<artist>`
 
-### 风控边界
+## 迁移与安全
 
-自动续期不能承诺永久登录。以下情况仍可能要求重新扫码：
+迁移账号时停止两边实例，并只复制对应 Cookie 文件。QQ 的两个文件应成对迁移；不要复制日志、二维码、`.env`、`node_modules` 或全局 npm 包配置。
 
-- 服务端撤销 refresh token。
-- 账号或设备风控。
-- QQ 音乐协议升级。
-- 登录频率/设备数量限制。
+所有凭据都必须：
 
-## 4. Bilibili
+- 由 Git 忽略。
+- 只由服务端读取。
+- 不写入浏览器 localStorage。
+- 不返回完整值给前端。
+- 不出现在公开日志、截图和问题单中。
 
-### 直连架构
-
-`bili_utils.py` 直接使用 Bilibili 公网接口，不依赖本地 Node API。
-
-主要能力：
-
-- 二维码登录。
-- SESSDATA 保存/验证。
-- 账号资料。
-- 收藏夹。
-- 搜索、BV 直解析、分 P。
-- DASH 音频播放 URL。
-
-### Session 预热
-
-共享 requests Session 会访问 Bilibili 首页/API 获取设备 Cookie（例如 buvid 类标识），用于降低匿名直连接口触发 `-412` 风控的概率。
-
-### 媒体注意事项
-
-Bilibili DASH 音频 URL 可能带复杂查询参数。媒体进程必须使用参数数组创建，避免 shell 对 URL 中 `%`、`&` 等字符进行二次解释。
-
-## 5. 统一展示元数据
-
-Web 队列展示应优先使用显式元数据：
-
-- `title` / `artist`
-- 兼容旧 KOOK 命令的 `音乐名字` 等字段
-
-网络播放 URL 不能作为歌曲标题的 fallback。缺失元数据时显示“未知歌曲/未知歌手”，避免把哈希、URL 尾部或签名参数暴露到 UI。
-
-## 6. 凭据文件安全
-
-所有 Cookie/Credential 文件都属于敏感信息：
-
-- 不提交到 Git。
-- 不记录到公开日志。
-- 不通过前端返回完整 Cookie。
-- 不在问题单、截图或文档中粘贴真实值。
-
-详细边界见 [security.md](security.md)。
+完整安全边界见 [security.md](security.md)。

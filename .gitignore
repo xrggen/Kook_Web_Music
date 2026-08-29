@@ -64,8 +64,8 @@ ffmpeg.bac/
 .DS_Store
 Thumbs.db
 
-# Node API source is tracked; each API's nested .gitignore excludes
-# node_modules and generated/runtime files.
+# Node APIs are installed in the system npm global root. Project-local
+# node_modules remains ignored as a safety net and is rejected by run.py.
 
 # Bilibili API (if local copy)
 bilibili-api/

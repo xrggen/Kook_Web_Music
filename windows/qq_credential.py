@@ -225,23 +225,6 @@ def _credential_from_cookie(
     }
 
 
-def _sync_external_user_info(credential: Dict[str, Any]) -> None:
-    """同步运行时 qq-music-api 的 user-info.json；目录不存在时静默跳过。"""
-    base_dir = os.path.dirname(os.path.realpath(__file__))
-    info_path = os.path.join(base_dir, "qq-music-api", "config", "user-info.json")
-    directory = os.path.dirname(info_path)
-    if not os.path.isdir(directory):
-        return
-    payload = {
-        "loginUin": str(credential.get("uin") or ""),
-        "cookie": str(credential.get("cookie") or ""),
-    }
-    try:
-        _atomic_write_text(info_path, json.dumps(payload, ensure_ascii=False))
-    except Exception as exc:
-        logger.warning("[QQ凭证] 同步 qq-music-api user-info.json 失败: %s", exc)
-
-
 def _invalidate_legacy_verify_cache() -> None:
     """旧 Bot 命令仍经 qq_utils.verify_qq_cookie；凭证变化后立即清掉它的短期缓存。"""
     candidates = ["qq_utils"]
@@ -276,7 +259,6 @@ def _persist(credential: Dict[str, Any]) -> Dict[str, Any]:
         QQ_CREDENTIAL_PATH,
         json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True),
     )
-    _sync_external_user_info(stored)
     _invalidate_legacy_verify_cache()
     return stored
 
@@ -340,7 +322,6 @@ def clear_qq_credential() -> None:
                     os.remove(path)
             except OSError as exc:
                 logger.warning("[QQ凭证] 删除 %s 失败: %s", path, exc)
-        _sync_external_user_info({"uin": "", "cookie": ""})
         _invalidate_legacy_verify_cache()
 
 

@@ -1,53 +1,44 @@
-# KOOK音乐机器人Web控制台
+# Windows 运行教程
 
-这是一个基于Flask的KOOK音乐机器人Web控制台，可以通过Web界面控制KOOK音乐机器人的播放功能。
+本文只保留 Windows 平台差异。Node、配置、凭据迁移、升级和验证的完整说明见 [部署指南](docs/deployment.md)。
 
-## 功能特点
+## 前置检查
 
-- 服务器管理：查看和选择服务器
-- 频道管理：加入/离开语音频道
-- 音乐搜索：搜索网易云音乐
-- 歌单导入：导入网易云歌单
-- 播放控制：播放、暂停、跳过、调整进度
-- 播放列表管理：查看、添加、删除歌曲
-
-## 安装
-
-安装依赖
-```bash
-pip install -r requirements.txt
+```powershell
+node --version
+npm --version
 ```
 
-配置环境变量
-```bash
+Node.js 必须为 20+，且来自系统 PATH。全局安装项目使用的 API：
+
+```powershell
+npm install --global NeteaseCloudMusicApi@4.25.0 @sansenjian/qq-music-api@2.3.1
+```
+
+不要在项目目录安装 Node 依赖，也不要放置便携 Node 或 `node_modules`。
+
+## 安装与启动
+
+```powershell
+cd windows
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 python create_env.py
-# Token输入不会显示，SECRET_KEY会自动随机生成
-```
-
-运行应用
-```bash
 python run.py
 ```
 
-## 配置
+`create_env.py` 会创建 `windows/.env`。Windows 默认优先使用 `windows/ffmpeg/bin`，也可以在 `.env` 中显式配置系统 FFmpeg。
 
-在`.env`文件中配置以下参数：
+启动后访问 `http://127.0.0.1:5000/`。日志位于 `windows/debug.log`、`windows/netease_api_output.log` 和 `windows/qq_api_output.log`。
 
-- `BOT_TOKEN`：KOOK机器人的Token
-- `FFMPEG_PATH`：FFmpeg可执行文件的路径
-- `MUSIC_API_BASE`：音乐API的基础URL
-- `SECRET_KEY`：Web应用的密钥
+## 登录态
 
-`.env`、Cookie、会话和日志仅保存在本机，禁止加入Git。发布前在仓库
-根目录执行 `python scripts/check_secrets.py`。
+三平台凭据保存在 `windows/Cookie/`。从其他安装迁移时先停止两边实例，只复制凭据文件，不复制 Node 包配置、日志或 `node_modules`。
 
-## 技术栈
+## 常见问题
 
-- 后端：Flask, Python
-- 前端：Bootstrap 5, JavaScript
-- 音频处理：FFmpeg
-- 实时通信：Socket.IO (可选)
-
-## 许可证
-
-MIT
+- 端口冲突：确认 3000、3200、5000 的占用 PID，再只停止旧的本项目实例。
+- Node 包未找到：重新检查 `npm root --global` 和全局安装版本。
+- FFmpeg 未找到：检查随包文件或设置 `FFMPEG_PATH`、`FFPROBE_PATH`。
+- PowerShell 无法激活 venv：直接运行 `.\.venv\Scripts\python.exe run.py`。

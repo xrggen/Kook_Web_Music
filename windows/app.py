@@ -1465,57 +1465,20 @@ async def help_cmd(msg: Message):
         "/qq当前账号 — 查看登录的QQ音乐账号\n"
         "/bili当前账号 — 查看登录的B站账号\n"
         "/ping — 测试机器人连接\n"
-        "/版本信息 — 查看当前版本与历史版本\n"
+        "/版本信息 — 查看当前构建标识\n"
         "/帮助 — 显示本帮助信息"
     )
     await msg.reply(help_text)
 
 @bot.command(name='版本信息')
 async def version_cmd(msg: Message):
-    """从 README 读取并回复当前版本及最近历史版本"""
+    """回复当前构建标识；发布标识由 APP_VERSION 配置。"""
     try:
         logger.info(f"[命令:版本信息] 用户={msg.author_id}")
-        readme_path = os.path.join(os.path.dirname(__file__), "README.md")
-        if not os.path.exists(readme_path):
-            await msg.reply("V2.2 (2026-05-27)")
-            return
-
-        with open(readme_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        current = ""
-        versions = []
-        in_table = False
-        for line in lines:
-            s = line.strip()
-            # 解析当前版本行: > **当前版本**: V2.2 | **发布日期**: 2026-05-27
-            if s.startswith("> **当前版本**:"):
-                current = s.replace("> **当前版本**:", "").replace("**", "").strip()
-            # 版本表格行: | **V2.2** | 2026-05-27 | 功能增强 | ... |
-            if s.startswith("| **V") and "|" in s:
-                in_table = True
-                parts = [p.strip() for p in s.split("|")]
-                if len(parts) >= 4:
-                    ver = parts[1].replace("**", "")
-                    date = parts[2]
-                    vtype = parts[3]
-                    desc = parts[4] if len(parts) > 4 else ""
-                    versions.append((ver, date, vtype, desc))
-            elif in_table and not s.startswith("|"):
-                break
-
-        lines_out = [f"**KOOK 音乐机器人**", f"当前: {current}", ""]
-        show = versions[:3]
-        for i, (ver, date, vtype, desc) in enumerate(show):
-            prefix = "●" if i == 0 else "○"
-            lines_out.append(f"{prefix} **{ver}** ({date}) [{vtype}]")
-            if desc:
-                lines_out.append(f"  {desc[:80]}{'…' if len(desc) > 80 else ''}")
-
-        await msg.reply("\n".join(lines_out))
+        await msg.reply(f"**KOOK 音乐机器人**\n当前构建: {APP_VERSION}")
     except Exception as e:
         logger.error(f"[命令:版本信息] 出错: {e}")
-        await msg.reply("V2.2 (2026-05-27)")
+        await msg.reply("当前构建信息不可用")
 
 # 启动异步事件循环
 def start_bot_loop():

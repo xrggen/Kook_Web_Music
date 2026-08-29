@@ -10,6 +10,7 @@ PORT = 5000
 
 # KOOK机器人配置
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+APP_VERSION = os.environ.get("APP_VERSION", "desktop-ui-v2").strip() or "desktop-ui-v2"
 
 # Windows / Ubuntu 共用同一份配置实现。所有相对路径统一以当前平台目录
 # （windows/ 或 Ubuntu/）为基准，避免快捷方式、计划任务、systemd 或

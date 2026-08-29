@@ -1,125 +1,111 @@
-# 运维、健康检查与故障恢复
+# 运维与故障恢复
 
-## 1. 日志
+## 启动基线
 
-主要运行日志写入当前平台目录。Windows 主线使用可轮转 `debug.log`。本地 Node API 也各自写运行输出日志。
+每次部署或升级后先确认：
 
-排障时优先按时间线查看：
+```bash
+node --version
+npm root --global
+```
 
-1. Flask / Bot 主日志。
-2. 网易云 API 输出。
-3. QQ API 输出。
-4. FFmpeg 失败上下文。
-5. `/status` 或 `/api/debug` 的健康状态。
+Node.js 必须为 20+，全局模块目录必须位于项目外。启动日志还应显示两个 Node API 的全局包路径、FFmpeg 路径、Bot 状态和 Flask 监听地址。
 
-不要把包含 Cookie、Token、签名播放 URL 的完整日志直接贴到公开问题单。
+## 日志与状态
 
-## 2. 健康状态
+平台目录中的主要文件：
 
-`runtime_health.py` 记录至少包括：
+- `debug.log`：Python、Flask、Bot、播放器和 watchdog。
+- `netease_api_output.log`：网易云 Node API。
+- `qq_api_output.log`：QQ 音乐 Node API。
 
-- Bot 生命周期状态。
-- Bot event loop heartbeat。
-- KOOK gateway heartbeat / probe 可用性。
-- supervisor ready 状态。
+状态入口：
 
-Web 状态页使用这些数据判断“在线 / 警告 / 异常”，而不是只看 Flask 端口是否能访问。
+- `/status`：可视化运行状态。
+- `GET /api/stats`：播放与组件摘要。
+- `GET /api/system/status`：主机和进程统计。
+- `GET /api/debug`：Bot、loop、gateway 与队列摘要。
 
-## 3. Watchdog
+排障按时间线关联主日志、Node API 日志和 FFmpeg 错误。对外分享前删除 Token、Cookie、用户/频道 ID 和完整签名 URL。
 
-watchdog 的目标是分级恢复，而不是出现任何异常就整进程重启。
+## Watchdog
 
-大致策略：
+watchdog 不以 Flask 端口单一判定健康，而分别观察 Bot 生命周期、事件循环 heartbeat、KOOK gateway 活动、Web 和两个本地 API。
 
-1. 启动宽限期内避免误判。
-2. 连续检查 Bot loop、KOOK gateway、Web、本地网易云 API、QQ API。
-3. 单个外部 API 连续异常时优先只修复该组件。
-4. Bot/Web 持续异常或组件修复无效时才升级为完整重启。
-5. 完整重启受时间窗和次数预算限制，避免重启风暴。
+恢复顺序：
 
-## 4. 播放卡死
+1. 等待启动宽限期。
+2. 连续失败达到阈值后修复单个 Node API。
+3. 组件修复无效或 Bot/Web 持续异常时请求完整重启。
+4. 完整重启受时间窗、次数预算和退避限制。
+5. 重启前停止播放会话并回收本应用持有的子进程。
 
-`/脱离卡死` 使用分阶段恢复：
+阈值由 [部署文档](deployment.md#配置) 中的 `WATCHDOG_*` 环境变量控制。
 
-1. 对目标频道建立恢复栅栏。
-2. 请求当前播放任务停止。
-3. 请求 KOOK 脱离语音频道。
-4. 等待 PlayHandler 正常退出。
-5. 超时后回收该处理器登记的 FFmpeg/ffprobe。
-6. 必要时隔离旧处理器。
-7. 解除恢复栅栏前再次确认所有权，避免旧线程清理新会话。
+## Node API
 
-不建议通过“杀掉所有 ffmpeg/node 进程”作为默认恢复手段。
+网易云 3000 异常时检查：
 
-## 5. 本地 Node API 故障
+- `NeteaseCloudMusicApi@4.25.0` 是否全局安装。
+- `npm root --global` 是否可读且位于项目外。
+- `netease_api_output.log`。
+- `MUSIC_API_BASE` 是否被错误覆盖。
 
-### 网易云 3000
+QQ 3200 异常时检查：
 
-检查：
+- `@sansenjian/qq-music-api@2.3.1` 是否全局安装。
+- 全局包中的 `dist/app.js` 是否存在。
+- `qq_api_output.log`。
+- 项目内是否误放 `node_modules`，启动器会拒绝这种环境。
 
-- 目录是否存在。
-- Node 是否在 PATH。
-- `npm install` 是否完成。
-- 端口是否被其他程序占用。
-- API 日志是否立即退出。
+不要通过在项目中重新安装依赖来绕过故障。
 
-如果本地 API 不可用，代码可能按配置回退到 `MUSIC_API_BASE`，但不应依赖未知公网代理作为长期生产方案。
+## 端口冲突
 
-### QQ 3200
+Windows：
 
-检查：
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 3000,3200,5000 |
+  Select-Object LocalAddress,LocalPort,OwningProcess
+Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" |
+  Select-Object ProcessId,ExecutablePath,CommandLine
+```
 
-- `package.json` 是否存在。
-- `node_modules` 是否安装。
-- `dist/app.js` 是否存在。
-- `npm run build` 是否成功。
-- 3200 端口是否属于本项目进程。
+Ubuntu：
 
-## 6. QQ 登录频繁失效
+```bash
+ss -ltnp | grep -E ':(3000|3200|5000)\b'
+ps -fp <PID>
+```
 
-当前应先检查 Credential 生命周期，而不是直接让用户重新扫码：
+优先正常停止旧实例。只能在命令行、工作目录和父子关系确认后终止 PID；不要批量结束全部 Node、Python 或 FFmpeg。
 
-1. `qq_cookie.txt` 是否存在。
-2. `qq_credential.json` 是否已经迁移生成。
-3. Credential 是否包含 refresh token / refresh key 或可兼容的 musickey。
-4. 自动刷新日志是否成功写回新 Cookie。
-5. 是否只是 access token 过期，而 musickey 仍有效。
-6. 是否触发账号风控/设备限制。
+## 播放卡死
 
-必要时通过账号页面或 `POST /api/qq/account/refresh` 手工触发一次续期检查。
+`/脱离卡死` 会对目标频道执行恢复栅栏、停止当前任务、请求 KOOK 离开、等待处理器退出、超时回收已登记媒体进程，并在解除栅栏前复核处理器所有权。
 
-## 7. Bilibili -412 / 取链失败
+若仍失败，记录频道匿名标识、发生时间、当前歌曲元数据和相关日志，再重启实例。不要把“杀死所有 ffmpeg”作为首选方案。
 
-优先检查：
+## 账号问题
 
-- Session 预热是否成功。
-- User-Agent / Referer 是否正常。
-- SESSDATA 是否有效。
-- 是否使用参数数组启动 FFmpeg。
-- 是否使用正确的网络超时参数。
+QQ 登录频繁失效：
 
-不要把 DASH URL 先交给 shell 再执行。
+1. 确认 `qq_cookie.txt` 与 `qq_credential.json` 属于同一账号。
+2. 检查 Credential 是否具有可用 musickey 或 refresh 凭据。
+3. 查看自动刷新日志。
+4. 必要时调用 `POST /api/qq/account/refresh` 一次。
+5. 只有凭据被撤销或触发风控时才重新扫码。
 
-## 8. Web UI 状态异常
+Bilibili 返回 `-412` 或取链失败时，检查 Session 预热、User-Agent/Referer、SESSDATA、网络和 FFmpeg 参数；不要用 shell 执行 DASH URL。
 
-如果桌面正常、移动端异常：
+网易云登录异常时，先检查 3000 探针和 `Cookie/cookie.txt`，再从账号页重新验证。
 
-- 确认 `theme-init.js` 已加载 `mobile.css`、`mobile-polish.css`、`mobile-ui.js`。
-- 清除浏览器旧缓存或确认资源版本号。
-- 检查宽度是否小于等于 820px。
-- iOS 上检查 safe area 和 Visual Viewport。
+## 备份与恢复
 
-如果主题跨页面丢失，检查 `kook.ui.theme` 和共享 `_app_sidebar.html` 中的早期初始化脚本。
+需要备份的运行数据只有当前平台的 `.env` 与 `Cookie/`。日志可按运维策略轮转，不作为账号恢复依据。
 
-## 9. 推荐故障记录格式
+恢复时先部署代码和系统依赖，再恢复配置与凭据，最后启动并执行 [部署验证](deployment.md#启动与验证)。
 
-报告问题时至少保留：
+## 问题记录
 
-- 平台：Windows/Ubuntu。
-- 提交 SHA。
-- 启动方式。
-- 问题发生时间。
-- 服务器/频道可用匿名代号，不贴真实敏感 ID。
-- 最近 50~100 行相关日志（脱敏）。
-- 问题是否可重复。
-- `/status` 或 `/api/debug` 的关键状态。
+问题单至少包含平台、提交 SHA、启动方式、发生时间、复现步骤、脱敏后的最近日志和 `/api/debug` 摘要。不要附真实凭据或完整媒体 URL。
