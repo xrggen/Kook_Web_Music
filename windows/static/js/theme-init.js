@@ -4,8 +4,8 @@
     const STORAGE_KEY = 'kook.ui.theme';
     const media = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
     const stylesheets = [
-        ['kook-theme-stylesheet', '/static/css/theme.css?v=1.0'],
-        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=1.0']
+        ['kook-theme-stylesheet', '/static/css/theme.css?v=1.1'],
+        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=2.0']
     ];
 
     function ensureResources() {
@@ -21,8 +21,8 @@
         if (!document.getElementById('kook-mobile-script')) {
             const script = document.createElement('script');
             script.id = 'kook-mobile-script';
-            script.src = '/static/js/mobile-ui.js?v=1.0';
-            script.defer = true;
+            script.src = '/static/js/mobile-ui.js?v=2.0';
+            script.async = false;
             document.head.appendChild(script);
         }
     }
@@ -41,6 +41,16 @@
         return mode === 'light' ? 'light' : 'dark';
     }
 
+    function syncThemeColor(resolved) {
+        let meta = document.querySelector('meta[name="theme-color"]');
+        if (!meta) {
+            meta = document.createElement('meta');
+            meta.name = 'theme-color';
+            document.head.appendChild(meta);
+        }
+        meta.content = resolved === 'light' ? '#f4f6fa' : '#0d0f12';
+    }
+
     function apply() {
         ensureResources();
         const mode = readMode();
@@ -50,6 +60,7 @@
         root.dataset.uiTheme = resolved;
         root.dataset.bsTheme = resolved;
         root.style.colorScheme = resolved;
+        syncThemeColor(resolved);
         return { theme: mode, resolvedTheme: resolved };
     }
 
