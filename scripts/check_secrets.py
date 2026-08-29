@@ -49,12 +49,12 @@ CONTENT_RULES = {
         rb"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
     ),
     "authorization-value": re.compile(
-        rb"(?i)authorization\s*[:=]\s*[\"']?(?:bearer|bot|basic)\s+"
+        rb"(?i)authorization[ \t]*[:=][ \t]*[\"']?(?:bearer|bot|basic)[ \t]+"
         rb"[A-Za-z0-9._~+/=-]{12,}"
     ),
     "env-secret-assignment": re.compile(
         rb"(?im)^(?:BOT_TOKEN|SECRET_KEY|INITIAL_ADMIN_PASSWORD|CREDENTIAL_MASTER_KEY)"
-        rb"\s*=\s*[^\s#]{12,}\s*$"
+        rb"[ \t]*=[ \t]*[^\s#]{12,}[ \t]*$"
     ),
     "credential-url": re.compile(
         rb"(?i)https?://[^\s/:@]+:[^\s/@]+@[^\s/\"']+"
