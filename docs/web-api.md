@@ -7,7 +7,7 @@
 未登录：
 
 - 页面：重定向 `/login?next=...`；
-- API / Socket.IO：返回或拒绝为未认证状态。
+- API：返回或拒绝为未认证状态。
 
 首次登录尚未改密：
 
@@ -174,11 +174,10 @@ POST / PUT / PATCH / DELETE
 - `POST /api/logs/clear`：清空日志。
 - `POST /api/system/cleanup`：进程内清理。
 - `POST /api/system/cleanup/config`：调整清理阈值。
-- `GET /api/terminal/output`：读取运行日志增量。
-- `POST /api/terminal/command`：执行受首命令名单限制的 shell 字符串。
+- `GET /api/terminal/output`：读取运行日志增量；该接口不执行命令。
 - `POST /api/cache/test`：兼容探针。
 
-即使已有 Admin + CSRF，`/api/terminal/command` 仍因 `shell=True` 属于高风险 RCE 边界，详见 [security.md](security.md)。
+项目不提供远程 shell 或任意命令执行接口。
 
 ## 常见鉴权状态码
 
@@ -206,3 +205,6 @@ POST / PUT / PATCH / DELETE
 5. 用户输入和平台文本通过 `textContent` 等安全方式写入 DOM。
 6. Cookie、Credential、Session Token、CSRF Token、临时密码和完整签名播放 URL不得返回普通 UI。
 7. 修改现有字段、路径或权限边界时，同步更新 Web、Bot 调用点、`authentication.md`、`security.md` 和本文。
+8. 写请求中的 `guild_id` / `channel_id` 应只在 JSON 中提供一次；重复 Query 或 Query/JSON 冲突会返回 `400`。
+9. 搜索、分页、账号、歌单和队列接口均有长度/数量上限；调用方必须处理 `400`、`409`、`413`、`429` 或被安全截断的结果。
+10. 第三方平台响应不是内部契约；服务端只返回规一化后的允许字段，不保证透传平台原始 JSON。

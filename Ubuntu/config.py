@@ -5,8 +5,40 @@ import sys
 
 # 基本配置
 DEBUG = False
-HOST = "0.0.0.0"
-PORT = 5000
+HOST = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
+
+
+def _env_port(name, default):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return value if 1 <= value <= 65535 else default
+
+
+def _env_positive_int(name, default, minimum=1, maximum=None):
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    value = max(minimum, value)
+    return min(value, maximum) if maximum is not None else value
+
+
+DEFAULT_WEB_PORT = 18473
+DEFAULT_MUSIC_API_PORT = 18474
+DEFAULT_QQ_MUSIC_API_PORT = 18475
+PORT = _env_port("PORT", DEFAULT_WEB_PORT)
+MAX_REQUEST_BYTES = _env_positive_int(
+    "MAX_REQUEST_BYTES", 1024 * 1024, 64 * 1024, 16 * 1024 * 1024
+)
+MAX_PLAYLIST_IMPORT_TRACKS = _env_positive_int(
+    "MAX_PLAYLIST_IMPORT_TRACKS", 1000, 1, 10_000
+)
+MAX_QUEUE_TRACKS = _env_positive_int("MAX_QUEUE_TRACKS", 2000, 1, 10_000)
+MAX_PLAYLIST_IMPORT_CONCURRENCY = _env_positive_int(
+    "MAX_PLAYLIST_IMPORT_CONCURRENCY", 2, 1, 32
+)
 
 # KOOK机器人配置
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -57,13 +89,12 @@ FFMPEG_PATH = _resolve_media_tool("FFMPEG_PATH", "ffmpeg.exe", "ffmpeg")
 FFPROBE_PATH = _resolve_media_tool("FFPROBE_PATH", "ffprobe.exe", "ffprobe")
 
 # 音乐API配置
-MUSIC_API_BASE = os.environ.get("MUSIC_API_BASE", "http://localhost:3000")
-
-# 备用API地址
-BACKUP_MUSIC_API = "https://api.music.liuzhijin.cn"
+MUSIC_API_PORT = _env_port("MUSIC_API_PORT", DEFAULT_MUSIC_API_PORT)
+MUSIC_API_BASE = f"http://127.0.0.1:{MUSIC_API_PORT}"
 
 # QQ音乐API配置
-QQ_MUSIC_API_BASE = os.environ.get("QQ_MUSIC_API_BASE", "http://localhost:3200")
+QQ_MUSIC_API_PORT = _env_port("QQ_MUSIC_API_PORT", DEFAULT_QQ_MUSIC_API_PORT)
+QQ_MUSIC_API_BASE = f"http://127.0.0.1:{QQ_MUSIC_API_PORT}"
 QQ_COOKIE_TXT_PATH = _resolve_project_path(
     os.environ.get("QQ_COOKIE_PATH", os.path.join("Cookie", "qq_cookie.txt"))
 )
@@ -76,14 +107,14 @@ BILI_COOKIE_TXT_PATH = _resolve_project_path(
     os.environ.get("BILI_COOKIE_PATH", os.path.join("Cookie", "bili_cookie.txt"))
 )
 
-# 权限白名单 — 留空表示不启用该维度过滤，全部非空时取交集
+# 权限白名单。默认拒绝所有 Bot 指令；如需无白名单运行，必须显式开启开关。
 # 格式: 逗号分隔的ID列表，例如 ALLOWGROUP=guild1,guild2
 ALLOWGROUP = set(filter(None, (x.strip() for x in os.environ.get("ALLOWGROUP", "").split(","))))
 ALLOWCHANNEL = set(filter(None, (x.strip() for x in os.environ.get("ALLOWCHANNEL", "").split(","))))
 ALLOWUSER = set(filter(None, (x.strip() for x in os.environ.get("ALLOWUSER", "").split(","))))
-
-# CMD指令强管控 — 仅名单内用户可执行 /cmd；留空则全员无权限（最安全策略）
-CMD_ALLOWUSER = set(filter(None, (x.strip() for x in os.environ.get("CMD_ALLOWUSER", "").split(","))))
+BOT_ALLOW_UNRESTRICTED = os.environ.get("BOT_ALLOW_UNRESTRICTED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # Web控制台配置
 SECRET_KEY = os.environ.get("SECRET_KEY", "").strip() or secrets.token_urlsafe(48)

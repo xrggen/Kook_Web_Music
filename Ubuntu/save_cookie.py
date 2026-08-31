@@ -3,6 +3,11 @@ import sys
 import json
 from typing import Dict
 
+try:
+    from .secure_storage import secure_write_text
+except ImportError:
+    from secure_storage import secure_write_text
+
 
 COOKIE_DIR = os.path.join(os.path.dirname(__file__), "Cookie")
 COOKIE_JSON_PATH = os.path.join(COOKIE_DIR, "cookies.json")
@@ -27,10 +32,11 @@ def parse_cookie_str(cookie_str: str) -> Dict[str, str]:
 def save(cookie_str: str):
     ensure_dir()
     cookies = parse_cookie_str(cookie_str)
-    with open(COOKIE_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
-    with open(COOKIE_TXT_PATH, "w", encoding="utf-8") as f:
-        f.write(cookie_str.strip())
+    secure_write_text(
+        COOKIE_JSON_PATH,
+        json.dumps(cookies, ensure_ascii=False, indent=2),
+    )
+    secure_write_text(COOKIE_TXT_PATH, cookie_str.strip())
     print(f"已写入: {COOKIE_JSON_PATH} 和 {COOKIE_TXT_PATH}")
 
 

@@ -19,8 +19,8 @@
         ▼
 Python 应用（Flask + KOOK Bot）
         │
-        ├─ 网易云：系统 Node → 全局 NeteaseCloudMusicApi → 3000
-        ├─ QQ 音乐：系统 Node → 全局 qq-music-api → 3200
+        ├─ 网易云：系统 Node → 全局 NeteaseCloudMusicApi → 18474
+        ├─ QQ 音乐：系统 Node → 全局 qq-music-api → 18475
         └─ Bilibili：Python 直连公网 API
         │
         ▼
@@ -36,7 +36,7 @@ FFmpeg 解码 / Opus 编码 → RTP → KOOK 语音频道
 
 ## 环境要求
 
-- Python 3.8+，建议使用当前受支持的 Python 3 版本。
+- Python 3.10+，建议使用当前受支持的 Python 3 版本。
 - 系统 Node.js 20+ 与 npm。
 - FFmpeg 和 ffprobe。
 - KOOK Bot Token。
@@ -76,7 +76,7 @@ python3 run.py
 
 Ubuntu 默认从 PATH 解析 `ffmpeg` 和 `ffprobe`。
 
-启动后访问 `http://127.0.0.1:5000/`。首次部署、systemd、反向代理、升级与验证步骤见 [部署指南](docs/deployment.md)。
+启动后访问 `http://127.0.0.1:18473/`。首次部署、systemd、反向代理、升级与验证步骤见 [部署指南](docs/deployment.md)。
 
 ## 配置与数据
 
@@ -86,7 +86,7 @@ Ubuntu 默认从 PATH 解析 `ffmpeg` 和 `ffprobe`。
 - `windows/Cookie/` 或 `Ubuntu/Cookie/`：三平台登录态。
 - 平台目录下的 `debug.log`、`netease_api_output.log`、`qq_api_output.log`：运行日志。
 
-凭据只保存在服务端，不写入全局 npm 包目录，也不应提交 Git。跨安装同步登录态时只复制 Cookie 目录中的凭据文件，具体清单见 [部署指南](docs/deployment.md#迁移已有登录态)。
+凭据只保存在服务端，不写入全局 npm 包目录，也不应提交 Git。跨安装同步登录态时只复制 Cookie 目录中的凭据文件，具体清单见 [部署指南](docs/deployment.md#迁移已有实例)。
 
 ## 项目目录
 
@@ -112,10 +112,11 @@ Windows 与 Ubuntu 的共享 Python、模板、前端和测试文件应保持一
 - [Web 页面与 API](docs/web-api.md)
 - [开发与平台同步](docs/development.md)
 - [安全边界](docs/security.md)
+- [安全审计修复与加固基线](docs/security-hardening.md)
 
 ## 安全
 
-默认按可信网络内自托管设计。建议本机部署时设置 `HOST=127.0.0.1`；需要远程访问时，应置于带认证和 TLS 的反向代理、VPN 或零信任访问层之后。不要直接向公网暴露 3000、3200 或未经认证的 5000 端口。
+默认按可信网络内自托管设计。建议本机部署时设置 `HOST=127.0.0.1`；需要远程访问时，应置于带认证和 TLS 的反向代理、VPN 或零信任访问层之后。不要直接向公网暴露 18474、18475 或未经认证的 18473 端口。
 
 发布前执行：
 

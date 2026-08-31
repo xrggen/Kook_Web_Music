@@ -124,14 +124,14 @@ watchdog 不修改 Web 用户、密码或 Scope。
 
 ## Node API
 
-网易云 3000 异常时检查：
+网易云 18474 异常时检查：
 
 - `NeteaseCloudMusicApi@4.25.0` 是否全局安装。
 - `npm root --global` 是否可读且位于项目外。
 - `netease_api_output.log`。
-- `MUSIC_API_BASE` 是否被错误覆盖。
+- `MUSIC_API_PORT` 是否被占用；应用只会访问对应的 `127.0.0.1` 端口。
 
-QQ 3200 异常时检查：
+QQ 18475 异常时检查：
 
 - `@sansenjian/qq-music-api@2.3.1` 是否全局安装。
 - 全局包中的 `dist/app.js` 是否存在。
@@ -145,7 +145,7 @@ QQ 3200 异常时检查：
 Windows：
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 3000,3200,5000 |
+Get-NetTCPConnection -State Listen -LocalPort 18473,18474,18475 |
   Select-Object LocalAddress,LocalPort,OwningProcess
 Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" |
   Select-Object ProcessId,ExecutablePath,CommandLine
@@ -154,7 +154,7 @@ Get-CimInstance Win32_Process -Filter "ProcessId=<PID>" |
 Ubuntu：
 
 ```bash
-ss -ltnp | grep -E ':(3000|3200|5000)\b'
+ss -ltnp | grep -E ':(18473|18474|18475)\b'
 ps -fp <PID>
 ```
 
@@ -178,7 +178,7 @@ QQ 登录频繁失效：
 
 Bilibili 返回 `-412` 或取链失败时，检查 Session 预热、User-Agent/Referer、SESSDATA、网络和 FFmpeg 参数；不要用 shell 执行 DASH URL。
 
-网易云登录异常时，先检查 3000 探针和 `Cookie/cookie.txt`，再由管理员从账号页重新验证。
+网易云登录异常时，先检查 18474 探针和 `Cookie/cookie.txt`，再由管理员从账号页重新验证。
 
 ## 备份与恢复
 

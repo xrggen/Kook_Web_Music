@@ -40,6 +40,12 @@ channel:<KOOK_GUILD_ID>/<KOOK_CHANNEL_ID>
 
 `GET /api/guilds` 会按用户 Scope 过滤服务器；`GET /api/channels` 与 `/api/channels/active` 会按服务器内可见频道过滤结果。播放写操作除 Role 外还会校验请求中的 `guild_id` / `channel_id` 是否处于授权范围。
 
+### 资源 ID 的唯一来源
+
+写请求的资源 ID 在统一 Middleware 中规一化。调用方应只在 JSON Body 中提供一次 `guild_id` / `channel_id`；同名 Query 参数重复，或 Query 与 JSON 同时提供但值不一致时，服务端返回 `400`。业务路由与鉴权守卫使用同一组规一化值，不能分别选择参数来源。
+
+Guild Scope 不能仅凭客户端提供的 `guild_id` 放行频道操作。服务端会查询 Channel 的真实 Guild 归属，并要求 Channel 已由 KOOK 同步验证且 Channel/Guild 都处于启用状态。管理员禁用频道后，普通同步只更新归属和元数据，不会自动重新启用。
+
 ## SQLite 表
 
 数据库默认位于：
@@ -214,10 +220,6 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 登录、改密、用户管理和鉴权 API 使用 `Cache-Control: no-store`。
 
-## Socket.IO
-
-Socket.IO 连接建立时会验证 Session，并拒绝仍处于 `must_change_password` 状态的用户。当前 Socket.IO 主要承担页面实时状态协作；如果未来增加敏感控制事件或细粒度房间数据，事件处理必须再增加与 HTTP 相同的 Role/Scope 校验，不能只依赖 connect 阶段登录。
-
 ## 环境变量
 
 ```env
@@ -270,10 +272,10 @@ data/
 
 ## 公网部署要求
 
-1. 只通过 HTTPS 反向代理暴露 Web 控制面；Flask、网易云 3000、QQ 3200 不直接暴露公网。
+1. 只通过 HTTPS 反向代理暴露 Web 控制面；Flask 18473、网易云 18474、QQ 18475 不直接暴露公网。
 2. Flask 建议只监听 `127.0.0.1`。
 3. `.env` 设置 `AUTH_COOKIE_SECURE=true`。
 4. `AUTH_TRUST_PROXY_HEADERS=true` 只用于受信任且会清洗 Forwarded Header 的代理。
 5. `.env`、`Cookie/`、`data/` 放在持久磁盘并限制文件权限。
 6. 发布前执行 `python scripts/check_secrets.py`；CI 同样扫描 tracked 文件和全部可达 Git 历史。
-7. Web 终端接口仍属于高风险边界，详见 [security.md](security.md)。
+7. `/api/terminal/output` 仅供管理员读取运行日志增量；项目不提供远程 shell 命令执行接口。

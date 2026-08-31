@@ -31,6 +31,28 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+MAX_ACCOUNT_PAGE_LIMIT = 100
+MAX_ACCOUNT_PAGE_OFFSET = 1_000_000
+
+
+def _single_query_value(name):
+    values = request.args.getlist(name)
+    if len(values) > 1:
+        raise ValueError(f"{name}不允许重复")
+    return values[0] if values else None
+
+
+def _parse_page_arg(name, default, minimum, maximum):
+    value = _single_query_value(name)
+    if value is None:
+        return default
+    if not value or len(value) > 12 or not value.isascii() or not value.isdigit():
+        raise ValueError(f"{name}参数格式无效")
+    parsed = int(value)
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name}参数超出允许范围")
+    return parsed
+
 
 def _load_qq_cookie():
     return load_qq_cookie()
@@ -117,34 +139,32 @@ def _clear_qq_cookie():
 
 def _qq_api_get(path, **params):
     cookie = _load_qq_cookie()
-    if cookie:
-        params["cookie"] = cookie
+    headers = {"Cookie": cookie} if cookie else {}
     url = f"{QQ_MUSIC_API_BASE}{path}"
     try:
-        res = requests.get(url, params=params, timeout=15)
+        res = requests.get(url, params=params, headers=headers, timeout=15, allow_redirects=False)
         return res.json()
     except Exception as e:
-        logger.error(f"[QQ账号API] GET {path} 异常: {e}")
-        return {"error": str(e)}
+        logger.error("[QQ账号API] GET %s 异常: %s", path, type(e).__name__)
+        return {"error": "QQ音乐API请求失败"}
 
 
 def _qq_api_post(path, data=None):
     cookie = _load_qq_cookie()
-    params = {}
-    if cookie:
-        params["cookie"] = cookie
+    headers = {"Cookie": cookie} if cookie else {}
     url = f"{QQ_MUSIC_API_BASE}{path}"
     try:
-        res = requests.post(url, params=params, json=data, timeout=15)
+        res = requests.post(url, json=data, headers=headers, timeout=15, allow_redirects=False)
         return res.json()
     except Exception as e:
-        logger.error(f"[QQ账号API] POST {path} 异常: {e}")
-        return {"error": str(e)}
+        logger.error("[QQ账号API] POST %s 异常: %s", path, type(e).__name__)
+        return {"error": "QQ音乐API请求失败"}
 
 
-def register_qq_account_routes(app):
+def register_qq_account_routes(app, start_maintenance=True):
     """注册QQ音乐账号管理路由，并启动单例凭证续期守护线程。"""
-    start_qq_credential_maintenance()
+    if start_maintenance:
+        start_qq_credential_maintenance()
 
     @app.route('/api/qq/account/status', methods=['GET'])
     def qq_account_status():
@@ -167,8 +187,8 @@ def register_qq_account_routes(app):
                 "refresh_failures": result.get("refresh_failures", 0),
             })
         except Exception as e:
-            logger.error(f"[QQ账号] 状态查询异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 状态查询异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/refresh', methods=['POST'])
     def qq_account_refresh():
@@ -185,8 +205,8 @@ def register_qq_account_routes(app):
                 "message": "QQ音乐登录凭证续期成功",
             })
         except Exception as e:
-            logger.warning(f"[QQ账号] 手动续期失败: {e}")
-            return jsonify({"code": 409, "success": False, "error": str(e)})
+            logger.warning("[QQ账号] 手动续期失败: %s", type(e).__name__)
+            return jsonify({"code": 409, "success": False, "error": "QQ音乐凭据更新冲突"}), 409
 
     @app.route('/api/qq/account/qr/create', methods=['POST'])
     def qq_account_qr_create():
@@ -203,8 +223,8 @@ def register_qq_account_routes(app):
                 })
             return jsonify({"code": 500, "error": "获取二维码失败"})
         except Exception as e:
-            logger.error(f"[QQ账号] 创建二维码异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 创建二维码异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/qr/check', methods=['POST'])
     def qq_account_qr_check():
@@ -237,8 +257,8 @@ def register_qq_account_routes(app):
             else:
                 return jsonify({"code": 200, "status": "waiting", "message": "等待扫码"})
         except Exception as e:
-            logger.error(f"[QQ账号] 检查扫码状态异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 检查扫码状态异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/profile', methods=['GET'])
     def qq_account_profile():
@@ -260,13 +280,19 @@ def register_qq_account_routes(app):
                 "nickname": f"QQ用户{uin[-4:]}" if uin else "QQ用户",
             })
         except Exception as e:
-            logger.error(f"[QQ账号] 获取详情异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 获取详情异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/playlists', methods=['GET'])
     def qq_account_playlists():
         """获取QQ音乐用户歌单"""
         try:
+            offset = _parse_page_arg(
+                "offset", 0, 0, MAX_ACCOUNT_PAGE_OFFSET
+            )
+            limit = _parse_page_arg(
+                "limit", 30, 1, MAX_ACCOUNT_PAGE_LIMIT
+            )
             status = ensure_qq_credential(force_refresh=False, reason="account-playlists")
             if not status.get("valid"):
                 return jsonify({"code": 401, "error": "未登录或登录凭证已失效"})
@@ -275,22 +301,20 @@ def register_qq_account_routes(app):
             except ImportError:
                 from qq_utils import get_qq_user_playlists
             uin = status.get("uin", "")
-            offset = request.args.get("offset", 0, type=int)
-            limit = request.args.get("limit", 30, type=int)
             playlists = get_qq_user_playlists(uin, offset, limit)
             return jsonify({"code": 200, "playlists": playlists, "total": len(playlists)})
+        except ValueError:
+            return jsonify({"code": 400, "error": "分页参数无效"}), 400
         except Exception as e:
-            logger.error(f"[QQ账号] 获取歌单异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 获取歌单异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/cookie', methods=['POST'])
     def qq_account_save_cookie():
         """手动保存QQ音乐Cookie，同时构建可续期Credential。"""
         try:
             data = request.json or {}
-            cookie = data.get("cookie", "").strip()
-            if not cookie:
-                return jsonify({"code": 400, "error": "Cookie不能为空"})
+            cookie = data.get("cookie")
             credential = _save_qq_cookie(cookie, source="manual")
             return jsonify({
                 "code": 200,
@@ -300,9 +324,11 @@ def register_qq_account_routes(app):
                     or str(credential.get("musickey") or "").startswith(("Q_H_L", "W_X"))
                 ),
             })
+        except ValueError as e:
+            return jsonify({"code": 400, "error": str(e)}), 400
         except Exception as e:
-            logger.error(f"[QQ账号] 保存cookie异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 保存cookie异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500
 
     @app.route('/api/qq/account/logout', methods=['POST'])
     def qq_account_logout():
@@ -312,5 +338,5 @@ def register_qq_account_routes(app):
             logger.info("[QQ账号] 已退出登录并清理本地Credential")
             return jsonify({"code": 200, "message": "已退出QQ音乐登录"})
         except Exception as e:
-            logger.error(f"[QQ账号] 退出异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[QQ账号] 退出异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "QQ音乐账号操作失败"}), 500

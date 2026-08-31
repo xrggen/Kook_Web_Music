@@ -37,13 +37,13 @@
         const enabledWrap = document.createElement('label'); enabledWrap.className = 'form-check form-switch m-0';
         const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.className = 'form-check-input iam-enabled'; enabled.checked = Boolean(user.enabled);
         const enabledLabel = document.createElement('span'); enabledLabel.className = 'small ms-1'; enabledLabel.textContent = '启用'; enabledWrap.append(enabled, enabledLabel);
-        const scope = document.createElement('input'); scope.type = 'text'; scope.className = 'form-control form-control-sm iam-inline-control iam-scope-input'; scope.value = user.scopes || '*'; scope.placeholder = '*, guild:服务器ID, channel:服务器ID/频道ID'; scope.disabled = user.role === 'admin';
-        role.addEventListener('change', () => { scope.disabled = role.value === 'admin'; if (role.value === 'user' && !scope.value.trim()) scope.value = '*'; });
+        const scope = document.createElement('input'); scope.type = 'text'; scope.className = 'form-control form-control-sm iam-inline-control iam-scope-input'; scope.value = user.scopes || ''; scope.placeholder = '*, guild:服务器ID, channel:服务器ID/频道ID'; scope.disabled = user.role === 'admin';
+        role.addEventListener('change', () => { scope.disabled = role.value === 'admin'; });
         const actions = document.createElement('div'); actions.className = 'iam-row-actions';
         const save = iconButton('bi-check2', '保存'); const reset = iconButton('bi-key', '重置密码'); const remove = iconButton('bi-trash3', '删除', 'danger'); actions.append(save, reset, remove);
         save.addEventListener('click', async () => {
             save.disabled = true;
-            try { await requestJSON(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ role: role.value, enabled: enabled.checked, scopes: scope.value.trim() || '*' }) }); showMessage(`已保存 ${user.username} 的权限设置`); await loadUsers(); }
+            try { await requestJSON(`/api/admin/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ role: role.value, enabled: enabled.checked, scopes: scope.value.trim() }) }); showMessage(`已保存 ${user.username} 的权限设置`); await loadUsers(); }
             catch (error) { showMessage(error.message, true); }
             finally { save.disabled = false; }
         });
@@ -67,13 +67,22 @@
         try { const data = await requestJSON('/api/admin/users'); list.replaceChildren(...data.users.map(renderUser)); }
         catch (error) { list.innerHTML = ''; showMessage(error.message, true); }
     }
+    const createRole = document.getElementById('iam-create-role');
+    const createScopes = document.getElementById('iam-create-scopes');
+    function syncCreateScopeState() {
+        const isUser = createRole.value === 'user';
+        createScopes.disabled = !isUser;
+        createScopes.required = isUser;
+    }
+    createRole?.addEventListener('change', syncCreateScopeState);
+    syncCreateScopeState();
     form?.addEventListener('submit', async event => {
         event.preventDefault();
         const username = document.getElementById('iam-create-username').value.trim();
         const role = document.getElementById('iam-create-role').value;
-        const scopes = document.getElementById('iam-create-scopes').value.trim() || '*';
+        const scopes = createScopes.value.trim();
         const submit = form.querySelector('button[type="submit"]'); submit.disabled = true;
-        try { const data = await requestJSON('/api/admin/users', { method: 'POST', body: JSON.stringify({ username, role, scopes }) }); showMessage(`用户已创建。临时密码（仅显示本次）：${data.temporary_password}`, false, true); form.reset(); document.getElementById('iam-create-scopes').value = '*'; await loadUsers(); }
+        try { const data = await requestJSON('/api/admin/users', { method: 'POST', body: JSON.stringify({ username, role, scopes }) }); showMessage(`用户已创建。临时密码（仅显示本次）：${data.temporary_password}`, false, true); form.reset(); syncCreateScopeState(); await loadUsers(); }
         catch (error) { showMessage(error.message, true); }
         finally { submit.disabled = false; }
     });

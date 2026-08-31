@@ -34,8 +34,8 @@ def register_bili_account_routes(app):
                 "message": result.get("message", ""),
             })
         except Exception as e:
-            logger.error(f"[Bili账号] 状态查询异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 状态查询异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/qr/create', methods=['POST'])
     def bili_account_qr_create():
@@ -50,8 +50,8 @@ def register_bili_account_routes(app):
                 "qrcode_key": result["qrcode_key"],
             })
         except Exception as e:
-            logger.error(f"[Bili账号] 创建二维码异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 创建二维码异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/qr/check', methods=['POST'])
     def bili_account_qr_check():
@@ -68,8 +68,8 @@ def register_bili_account_routes(app):
                 "message": result.get("message", ""),
             })
         except Exception as e:
-            logger.error(f"[Bili账号] 检查扫码状态异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 检查扫码状态异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/profile', methods=['GET'])
     def bili_account_profile():
@@ -90,8 +90,8 @@ def register_bili_account_routes(app):
                 "vip_type": user.get("vip_type", 0),
             })
         except Exception as e:
-            logger.error(f"[Bili账号] 获取详情异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 获取详情异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/playlists', methods=['GET'])
     def bili_account_playlists():
@@ -113,26 +113,23 @@ def register_bili_account_routes(app):
                 "total": len(playlists),
             })
         except Exception as e:
-            logger.error(f"[Bili账号] 获取收藏夹异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 获取收藏夹异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/cookie', methods=['POST'])
     def bili_account_save_cookie():
         """手动保存B站Cookie (SESSDATA)"""
         try:
             data = request.json or {}
-            cookie = data.get("cookie", "").strip()
-            if not cookie:
-                return jsonify({"code": 400, "error": "Cookie不能为空"})
-            # 支持直接传入 SESSDATA 或完整 Cookie 串
-            if not cookie.startswith("SESSDATA="):
-                cookie = f"SESSDATA={cookie}"
+            cookie = data.get("cookie")
             save_bili_cookie(cookie)
             logger.info("[Bili账号] 手动保存cookie成功")
             return jsonify({"code": 200, "message": "Cookie保存成功"})
+        except ValueError as e:
+            return jsonify({"code": 400, "error": str(e)}), 400
         except Exception as e:
-            logger.error(f"[Bili账号] 保存cookie异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 保存cookie异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500
 
     @app.route('/api/bili/account/logout', methods=['POST'])
     def bili_account_logout():
@@ -142,5 +139,5 @@ def register_bili_account_routes(app):
             logger.info("[Bili账号] 已退出登录")
             return jsonify({"code": 200, "message": "已退出B站登录"})
         except Exception as e:
-            logger.error(f"[Bili账号] 退出异常: {e}")
-            return jsonify({"code": 500, "error": str(e)})
+            logger.error("[Bili账号] 退出异常: %s", type(e).__name__)
+            return jsonify({"code": 500, "error": "B站账号操作失败"}), 500

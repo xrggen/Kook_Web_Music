@@ -4,13 +4,14 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import sqlite3
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from flask import (
     abort,
@@ -26,11 +27,49 @@ from flask import (
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "data" / "kook_music.db"
-BOOTSTRAP_ADMIN_USERNAME = "gen"
-BOOTSTRAP_ADMIN_PASSWORD_HASH = (
-    "pbkdf2_sha256$600000$lFTJVeeSk2IvTAo7tE4iRg$"
-    "EUCMKQfXOYz6SEkfzun6HYRH8A_NurnLzYbcK1PJwWk"
-)
+BOOTSTRAP_ADMIN_USERNAME = os.environ.get("INITIAL_ADMIN_USERNAME", "gen").strip() or "gen"
+CURRENT_SCHEMA_VERSION = 3
+LOGGER = logging.getLogger(__name__)
+
+SCHEMA_MIGRATIONS = {
+    2: (
+        "CREATE INDEX IF NOT EXISTS idx_channels_guild_channel ON channels(guild_id, kook_channel_id)",
+        """
+        UPDATE user_scopes
+        SET guild_id=(SELECT guild_id FROM channels WHERE channels.id=user_scopes.channel_id)
+        WHERE channel_id IS NOT NULL
+          AND COALESCE(guild_id, -1) != COALESCE(
+              (SELECT guild_id FROM channels WHERE channels.id=user_scopes.channel_id), -2
+          )
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_user_scopes_channel_guild_insert
+        BEFORE INSERT ON user_scopes
+        WHEN NEW.channel_id IS NOT NULL AND (
+            NEW.guild_id IS NULL OR
+            NEW.guild_id != (SELECT guild_id FROM channels WHERE id=NEW.channel_id)
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'channel scope guild mismatch');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_user_scopes_channel_guild_update
+        BEFORE UPDATE OF guild_id, channel_id ON user_scopes
+        WHEN NEW.channel_id IS NOT NULL AND (
+            NEW.guild_id IS NULL OR
+            NEW.guild_id != (SELECT guild_id FROM channels WHERE id=NEW.channel_id)
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'channel scope guild mismatch');
+        END
+        """,
+    ),
+    3: (
+        "ALTER TABLE channels ADD COLUMN verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1))",
+        "CREATE INDEX IF NOT EXISTS idx_channels_verified ON channels(verified, enabled)",
+    ),
+}
 
 SESSION_COOKIE = "kook_session"
 CSRF_COOKIE = "kook_csrf"
@@ -65,6 +104,16 @@ ADMIN_API_PREFIXES = (
     "/api/admin",
     "/api/stats",
 )
+USER_ACCOUNT_READ_API = {
+    "/api/account/status",
+    "/api/account/playlists",
+    "/api/qq/account/status",
+    "/api/qq/account/profile",
+    "/api/qq/account/playlists",
+    "/api/bili/account/status",
+    "/api/bili/account/profile",
+    "/api/bili/account/playlists",
+}
 USER_API_EXACT = {
     "/api/guilds",
     "/api/channels",
@@ -86,17 +135,7 @@ USER_API_EXACT = {
     "/api/remove",
     "/api/playlist/promote",
 }
-USER_ACCOUNT_READ = {
-    "/api/account/status",
-    "/api/account/playlists",
-    "/api/qq/account/status",
-    "/api/qq/account/profile",
-    "/api/qq/account/playlists",
-    "/api/bili/account/status",
-    "/api/bili/account/profile",
-    "/api/bili/account/playlists",
-}
-PUBLIC_PATHS = {"/login", "/favicon.ico"}
+PUBLIC_PATHS = {"/login", "/healthz", "/favicon.ico"}
 PASSWORD_RE = re.compile(r"^(?=.{12,128}$)(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 
@@ -111,14 +150,124 @@ def _db_path() -> Path:
     return path.resolve()
 
 
+def _chmod_private(path: Path, mode: int) -> None:
+    if os.name == "nt":
+        return
+    try:
+        path.chmod(mode)
+    except OSError as exc:
+        LOGGER.warning("无法收紧认证数据权限 path=%s error=%s", path, type(exc).__name__)
+
+
 def _connect() -> sqlite3.Connection:
     path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _chmod_private(path.parent, 0o700)
     conn = sqlite3.connect(str(path), timeout=5.0)
+    _chmod_private(path, 0o600)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+def _bootstrap_credential_path() -> Path:
+    configured = os.environ.get("INITIAL_ADMIN_CREDENTIAL_PATH", "").strip()
+    if not configured:
+        return _db_path().with_name("bootstrap-admin.json")
+    path = Path(os.path.expandvars(os.path.expanduser(configured)))
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+def _apply_schema_migrations(db: sqlite3.Connection) -> None:
+    applied = {
+        int(row[0])
+        for row in db.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+    }
+    unsupported = [version for version in applied if version > CURRENT_SCHEMA_VERSION]
+    if unsupported:
+        raise RuntimeError(
+            f"数据库版本 {max(unsupported)} 高于当前程序支持的版本 {CURRENT_SCHEMA_VERSION}"
+        )
+    for version in range(2, CURRENT_SCHEMA_VERSION + 1):
+        if version in applied:
+            continue
+        statements = SCHEMA_MIGRATIONS.get(version)
+        if not statements:
+            raise RuntimeError(f"缺少数据库迁移脚本：版本 {version}")
+        with db:
+            for statement in statements:
+                db.execute(statement)
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                (version, int(time.time())),
+            )
+
+
+def _load_or_create_bootstrap_password() -> str:
+    if not USERNAME_RE.match(BOOTSTRAP_ADMIN_USERNAME):
+        raise RuntimeError("INITIAL_ADMIN_USERNAME 必须为 3–32 位字母、数字、点、下划线或连字符")
+
+    configured = os.environ.get("INITIAL_ADMIN_PASSWORD", "")
+    if configured:
+        error = validate_password(configured)
+        if error:
+            raise RuntimeError(f"INITIAL_ADMIN_PASSWORD 不符合密码策略：{error}")
+        return configured
+
+    path = _bootstrap_credential_path()
+    if path.is_file():
+        try:
+            _chmod_private(path, 0o600)
+            with path.open("r", encoding="utf-8") as credential_file:
+                raw_payload = credential_file.read(4097)
+            if len(raw_payload) > 4096:
+                raise ValueError("初始化凭据文件过大")
+            payload = json.loads(raw_payload)
+            username = str(payload.get("username", ""))
+            password = str(payload.get("password", ""))
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError(f"无法读取初始化凭据文件：{path}") from exc
+        if username != BOOTSTRAP_ADMIN_USERNAME or validate_password(password):
+            raise RuntimeError(f"初始化凭据文件内容无效：{path}")
+        return password
+
+    password = secrets.token_urlsafe(24) + "!Aa1"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"username": BOOTSTRAP_ADMIN_USERNAME, "password": password},
+                handle,
+                ensure_ascii=False,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            path.chmod(0o600)
+        except OSError:
+            LOGGER.warning("无法收紧初始化凭据文件权限：%s", path)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
+    LOGGER.warning("已生成一次性初始化管理员凭据：%s；首次改密后将自动删除", path)
+    return password
+
+
+def _discard_bootstrap_credential_file(username: str) -> None:
+    if username != BOOTSTRAP_ADMIN_USERNAME:
+        return
+    path = _bootstrap_credential_path()
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        LOGGER.warning("首次改密成功，但无法删除初始化凭据文件：%s", path)
 
 
 def init_database() -> None:
@@ -229,9 +378,11 @@ def init_database() -> None:
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
             (1, int(time.time())),
         )
+        _apply_schema_migrations(db)
         count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if count == 0:
             now = int(time.time())
+            bootstrap_password = _load_or_create_bootstrap_password()
             cur = db.execute(
                 """
                 INSERT INTO users(
@@ -241,7 +392,7 @@ def init_database() -> None:
                 """,
                 (
                     BOOTSTRAP_ADMIN_USERNAME,
-                    BOOTSTRAP_ADMIN_PASSWORD_HASH,
+                    hash_password(bootstrap_password),
                     "admin",
                     1,
                     1,
@@ -507,12 +658,24 @@ def _clear_session_cookies(response) -> None:
 
 
 def _safe_next(value: str | None) -> str:
-    if not value:
+    if not isinstance(value, str) or not value or len(value) > 2048:
         return "/dashboard"
-    parsed = urlsplit(value)
-    if parsed.scheme or parsed.netloc or not value.startswith("/"):
+    try:
+        decoded = value
+        # Browsers normalize backslashes in Location URLs. Decode a bounded
+        # number of layers before validation so encoded scheme-relative URLs
+        # cannot turn into an external redirect after the response is sent.
+        for _ in range(2):
+            decoded = unquote(decoded)
+    except (TypeError, ValueError):
         return "/dashboard"
-    if value.startswith("//"):
+    try:
+        parsed = urlsplit(decoded)
+    except ValueError:
+        return "/dashboard"
+    if parsed.scheme or parsed.netloc or not decoded.startswith("/"):
+        return "/dashboard"
+    if decoded.startswith("//") or "\\" in decoded or any(ord(char) < 32 or ord(char) == 127 for char in decoded):
         return "/dashboard"
     return value
 
@@ -570,7 +733,6 @@ def ensure_channel(
                 guild_id,kook_channel_id,name,channel_type,enabled,created_at,updated_at
             ) VALUES(?,?,?,?,1,?,?)
             ON CONFLICT(kook_channel_id) DO UPDATE SET
-                guild_id=excluded.guild_id,
                 name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE channels.name END,
                 channel_type=excluded.channel_type,
                 updated_at=excluded.updated_at
@@ -588,12 +750,95 @@ def ensure_channel(
             conn.close()
 
 
+def sync_guild(kook_guild_id: str, name: str = "") -> int:
+    """保存从 KOOK API 获取的服务器信息。"""
+    return ensure_guild(kook_guild_id, name=name)
+
+
+def sync_channel(
+    kook_guild_id: str,
+    kook_channel_id: str,
+    name: str = "",
+    channel_type: str = "voice",
+) -> int:
+    """保存 KOOK API 已确认的频道归属，并原子修正已有频道范围。"""
+    with _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        guild_db_id = ensure_guild(kook_guild_id, db=db)
+        now = int(time.time())
+        row = db.execute(
+            "SELECT id FROM channels WHERE kook_channel_id=?",
+            (str(kook_channel_id),),
+        ).fetchone()
+        if row:
+            channel_db_id = int(row[0])
+            db.execute(
+                """
+                UPDATE channels
+                SET guild_id=?,name=?,channel_type=?,verified=1,updated_at=?
+                WHERE id=?
+                """,
+                (guild_db_id, name[:255], channel_type[:32], now, channel_db_id),
+            )
+            db.execute(
+                "UPDATE user_scopes SET guild_id=? WHERE channel_id=?",
+                (guild_db_id, channel_db_id),
+            )
+        else:
+            cursor = db.execute(
+                """
+                INSERT INTO channels(
+                    guild_id,kook_channel_id,name,channel_type,enabled,verified,created_at,updated_at
+                ) VALUES(?,?,?,?,1,1,?,?)
+                """,
+                (
+                    guild_db_id,
+                    str(kook_channel_id),
+                    name[:255],
+                    channel_type[:32],
+                    now,
+                    now,
+                ),
+            )
+            channel_db_id = int(cursor.lastrowid)
+        return channel_db_id
+
+
 def scope_allows(user: dict, guild_id: str | None = None, channel_id: str | None = None) -> bool:
     if user.get("role") == "admin":
         return True
     if not has_permission(user, "playback.control") and not has_permission(user, "playback.read"):
         return False
     with _connect() as db:
+        guild_db_id = None
+        if guild_id:
+            guild_row = db.execute(
+                "SELECT id FROM guilds WHERE kook_guild_id=? AND enabled=1",
+                (str(guild_id),),
+            ).fetchone()
+            if not guild_row:
+                return False
+            guild_db_id = int(guild_row[0])
+
+        channel_db_id = None
+        if channel_id:
+            channel_row = db.execute(
+                """
+                SELECT c.id,c.guild_id
+                FROM channels c
+                JOIN guilds gd ON gd.id=c.guild_id
+                WHERE c.kook_channel_id=? AND c.enabled=1 AND c.verified=1 AND gd.enabled=1
+                """,
+                (str(channel_id),),
+            ).fetchone()
+            if not channel_row:
+                return False
+            channel_db_id = int(channel_row[0])
+            actual_guild_db_id = int(channel_row[1])
+            if guild_db_id is not None and guild_db_id != actual_guild_db_id:
+                return False
+            guild_db_id = actual_guild_db_id
+
         global_scope = db.execute(
             """
             SELECT 1 FROM user_scopes
@@ -604,30 +849,26 @@ def scope_allows(user: dict, guild_id: str | None = None, channel_id: str | None
         ).fetchone()
         if global_scope:
             return True
-        if channel_id:
+        if channel_db_id is not None:
             row = db.execute(
                 """
-                SELECT 1
-                FROM user_scopes s
-                JOIN channels c ON c.id=s.channel_id
-                WHERE s.user_id=? AND s.domain='playback' AND c.kook_channel_id=?
+                SELECT 1 FROM user_scopes s
+                WHERE s.user_id=? AND s.domain='playback' AND s.channel_id=?
                 LIMIT 1
                 """,
-                (user["id"], str(channel_id)),
+                (user["id"], channel_db_id),
             ).fetchone()
             if row:
                 return True
-        if guild_id:
+        if guild_db_id is not None:
             row = db.execute(
                 """
-                SELECT 1
-                FROM user_scopes s
-                JOIN guilds gd ON gd.id=s.guild_id
+                SELECT 1 FROM user_scopes s
                 WHERE s.user_id=? AND s.domain='playback'
-                  AND s.channel_id IS NULL AND gd.kook_guild_id=?
+                  AND s.channel_id IS NULL AND s.guild_id=?
                 LIMIT 1
                 """,
-                (user["id"], str(guild_id)),
+                (user["id"], guild_db_id),
             ).fetchone()
             if row:
                 return True
@@ -652,13 +893,13 @@ def visible_guild_ids(user: dict) -> set[str] | None:
             SELECT DISTINCT gd.kook_guild_id
             FROM user_scopes s
             JOIN guilds gd ON gd.id=s.guild_id
-            WHERE s.user_id=? AND s.domain='playback'
+            WHERE s.user_id=? AND s.domain='playback' AND gd.enabled=1
             UNION
             SELECT DISTINCT gd.kook_guild_id
             FROM user_scopes s
             JOIN channels c ON c.id=s.channel_id
             JOIN guilds gd ON gd.id=c.guild_id
-            WHERE s.user_id=? AND s.domain='playback'
+            WHERE s.user_id=? AND s.domain='playback' AND gd.enabled=1 AND c.enabled=1
             """,
             (user["id"], user["id"]),
         ).fetchall()
@@ -683,7 +924,7 @@ def visible_channel_ids(user: dict, guild_id: str) -> set[str] | None:
             SELECT 1
             FROM user_scopes s JOIN guilds gd ON gd.id=s.guild_id
             WHERE s.user_id=? AND s.domain='playback'
-              AND s.channel_id IS NULL AND gd.kook_guild_id=?
+              AND s.channel_id IS NULL AND gd.kook_guild_id=? AND gd.enabled=1
             LIMIT 1
             """,
             (user["id"], str(guild_id)),
@@ -696,6 +937,7 @@ def visible_channel_ids(user: dict, guild_id: str) -> set[str] | None:
             JOIN channels c ON c.id=s.channel_id
             JOIN guilds gd ON gd.id=c.guild_id
             WHERE s.user_id=? AND s.domain='playback' AND gd.kook_guild_id=?
+              AND gd.enabled=1 AND c.enabled=1
             """,
             (user["id"], str(guild_id)),
         ).fetchall()
@@ -703,14 +945,42 @@ def visible_channel_ids(user: dict, guild_id: str) -> set[str] | None:
 
 
 def _request_resource_ids() -> tuple[str | None, str | None]:
+    cached = getattr(g, "request_resource_ids", None)
+    if cached is not None:
+        return cached
     data = request.get_json(silent=True) if request.method not in {"GET", "HEAD"} else None
     data = data if isinstance(data, dict) else {}
-    guild_id = request.args.get("guild_id") or data.get("guild_id")
-    channel_id = request.args.get("channel_id") or data.get("channel_id")
-    return (
-        str(guild_id) if guild_id not in (None, "") else None,
-        str(channel_id) if channel_id not in (None, "") else None,
-    )
+
+    def canonical(name: str) -> str | None:
+        query_values = request.args.getlist(name)
+        if len(query_values) > 1:
+            raise ValueError(f"{name} 不允许重复")
+        query_value = query_values[0] if query_values else None
+        body_value = data.get(name)
+        for value in (query_value, body_value):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{name} 必须是字符串")
+            if isinstance(value, str) and value != value.strip():
+                raise ValueError(f"{name} 格式无效")
+            if isinstance(value, str) and any(
+                char.isspace() or ord(char) < 32 or ord(char) == 127
+                for char in value
+            ):
+                raise ValueError(f"{name} 格式无效")
+        query_text = str(query_value).strip() if query_value not in (None, "") else None
+        body_text = str(body_value).strip() if body_value not in (None, "") else None
+        if request.method not in {"GET", "HEAD"} and query_text and not body_text:
+            raise ValueError(f"写请求中的 {name} 必须放在请求体")
+        if query_text and body_text and query_text != body_text:
+            raise ValueError(f"查询参数与请求体中的 {name} 不一致")
+        value = body_text or query_text
+        if value and len(value) > 128:
+            raise ValueError(f"{name} 过长")
+        return value
+
+    result = (canonical("guild_id"), canonical("channel_id"))
+    g.request_resource_ids = result
+    return result
 
 
 def _api_error(message: str, status: int):
@@ -719,6 +989,11 @@ def _api_error(message: str, status: int):
 
 def _authorize_request(user: dict):
     path = request.path
+    if path.startswith("/api/"):
+        try:
+            _request_resource_ids()
+        except ValueError as exc:
+            return _api_error(str(exc), 400)
     if user["role"] == "admin":
         return None
     if path in USER_PAGE_ALLOW:
@@ -728,7 +1003,7 @@ def _authorize_request(user: dict):
     if path.startswith("/api/"):
         if path == "/api/auth/session":
             return None
-        if request.method == "GET" and path in USER_ACCOUNT_READ:
+        if request.method == "GET" and path in USER_ACCOUNT_READ_API:
             return None
         if path.startswith(ADMIN_API_PREFIXES):
             return _api_error("需要管理员权限", 403)
@@ -848,6 +1123,8 @@ def _change_password():
                     (hash_password(new_password), now, user["id"]),
                 )
                 db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, user["id"]))
+            if row["must_change_password"]:
+                _discard_bootstrap_credential_file(row["username"])
             fresh = get_user_by_id(user["id"])
             token, csrf = create_session(fresh)
             audit("auth.password_changed", "auth", user_id=user["id"])
@@ -947,7 +1224,7 @@ def _admin_users_api(user_id: int | None = None):
                 item = dict(row)
                 item["enabled"] = bool(item["enabled"])
                 item["must_change_password"] = bool(item["must_change_password"])
-                item["scopes"] = "*" if item["role"] == "admin" else _scope_text(db, item["id"])
+                item["scopes"] = "" if item["role"] == "admin" else _scope_text(db, item["id"])
                 users.append(item)
         return jsonify({"success": True, "users": users})
 
@@ -955,7 +1232,7 @@ def _admin_users_api(user_id: int | None = None):
     if request.method == "POST" and user_id is None:
         username = str(data.get("username", "")).strip()
         role = str(data.get("role", "user")).strip()
-        scopes = str(data.get("scopes", "*")).strip()
+        scopes = str(data.get("scopes", "")).strip()
         if not USERNAME_RE.match(username):
             return _api_error("用户名需为 3–32 位字母、数字、点、下划线或连字符", 400)
         if role not in ROLE_PERMISSIONS:
@@ -990,20 +1267,36 @@ def _admin_users_api(user_id: int | None = None):
         return _api_error("用户不存在", 404)
 
     if request.method == "PATCH":
-        role = str(data.get("role", target["role"]))
-        enabled = bool(data.get("enabled", target["enabled"]))
-        scopes = str(data.get("scopes", "*"))
-        if role not in ROLE_PERMISSIONS:
-            return _api_error("无效角色", 400)
-        if actor["id"] == user_id and (role != "admin" or not enabled):
-            return _api_error("不能降级或禁用当前登录管理员", 400)
+        scopes_value = data.get("scopes")
         with _connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            locked_row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            if not locked_row:
+                return _api_error("用户不存在", 404)
+            target = dict(locked_row)
+            role = str(data.get("role", target["role"]))
+            raw_enabled = data.get("enabled", target["enabled"])
+            if isinstance(raw_enabled, bool):
+                enabled = raw_enabled
+            elif isinstance(raw_enabled, int) and raw_enabled in {0, 1}:
+                enabled = bool(raw_enabled)
+            else:
+                return _api_error("enabled 必须是布尔值", 400)
+            if role not in ROLE_PERMISSIONS:
+                return _api_error("无效角色", 400)
+            if actor["id"] == user_id and (role != "admin" or not enabled):
+                return _api_error("不能降级或禁用当前登录管理员", 400)
             if target["role"] == "admin" and (role != "admin" or not enabled):
                 admins = db.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND enabled=1").fetchone()[0]
                 if admins <= 1:
                     return _api_error("系统至少必须保留一个启用的管理员", 400)
             try:
                 if role == "user":
+                    scopes = (
+                        str(scopes_value).strip()
+                        if scopes_value is not None
+                        else (_scope_text(db, user_id) if target["role"] == "user" else "")
+                    )
                     _set_scopes(db, user_id, scopes)
                 else:
                     db.execute("DELETE FROM user_scopes WHERE user_id=?", (user_id,))
@@ -1025,6 +1318,11 @@ def _admin_users_api(user_id: int | None = None):
         if actor["id"] == user_id:
             return _api_error("不能删除当前登录管理员", 400)
         with _connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            locked_row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+            if not locked_row:
+                return _api_error("用户不存在", 404)
+            target = dict(locked_row)
             if target["role"] == "admin":
                 admins = db.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND enabled=1").fetchone()[0]
                 if admins <= 1:
@@ -1069,7 +1367,7 @@ def _request_guard():
     user, session = _load_session(request.cookies.get(SESSION_COOKIE))
     g.current_user, g.auth_session = user, session
     if not user:
-        if path.startswith("/api/") or path.startswith("/socket.io"):
+        if path.startswith("/api/"):
             return _api_error("请先登录", 401)
         return redirect(url_for("auth_login", next=_safe_next(request.full_path.rstrip("?"))))
 
@@ -1131,8 +1429,20 @@ def _after_request(response):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    if request.path in {"/login", "/change-password", "/users"} or request.path.startswith("/api/auth/"):
-        response.headers["Cache-Control"] = "no-store"
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "script-src 'self' https://cdn.jsdelivr.net https://code.jquery.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "font-src 'self' https://cdn.jsdelivr.net data:; "
+        "img-src 'self' data: https:; connect-src 'self'; form-action 'self'",
+    )
+    if not request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Vary"] = "Cookie"
     return response
 
 
@@ -1156,10 +1466,3 @@ def register_auth(app) -> None:
     app.after_request(_after_request)
     app.context_processor(_context)
     app.config["_AUTH_REGISTERED"] = True
-
-    socketio = app.extensions.get("socketio")
-    if socketio is not None:
-        @socketio.on("connect")
-        def _authenticated_socket_connect(auth=None):
-            user, _session = _load_session(request.cookies.get(SESSION_COOKIE))
-            return bool(user and not user.get("must_change_password"))

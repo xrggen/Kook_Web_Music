@@ -14,8 +14,8 @@ Web 浏览器
     ├─> Flask 页面 / HTTP API ─────────┐
     │                                  │
 KOOK Gateway ─> KOOK Bot 命令 ─────────┤
-                                       ├─> 网易云适配器 ─> 127.0.0.1:3000
-                                       ├─> QQ 适配器 ───> 127.0.0.1:3200
+                                       ├─> 网易云适配器 ─> 127.0.0.1:18474
+                                       ├─> QQ 适配器 ───> 127.0.0.1:18475
                                        └─> Bilibili 适配器 ─> 公网 REST / DASH
                                                  │
                                                  ▼
@@ -43,7 +43,7 @@ Web 控制面持久化和实时播放状态刻意分离：
 2. 从主机 PATH 解析项目目录外的 `node` 和 `npm`，校验 Node.js 20+。
 3. 通过 `npm root --global` 定位两个固定版本的全局 Node 包。
 4. 拒绝仓库内残留的 `node_modules` 或自带 Node 工具链。
-5. 启动网易云 API（3000）和 QQ 音乐 API（3200），输出写入平台目录日志。
+5. 启动网易云 API（18474）和 QQ 音乐 API（18475），输出写入平台目录日志。
 6. 创建 Flask 应用与 KOOK Bot 线程。
 7. 注册业务 Blueprint；`api.py` 的 `record_once` 安装统一 Web Auth Middleware 并初始化 SQLite。
 8. 启动健康状态采集和 watchdog。
@@ -181,3 +181,5 @@ watchdog 不负责重置 Web 用户或 SQLite。
 - Ubuntu 专属 `/monitor` 页面；Windows 该路由返回 404。
 
 任何长期业务分叉都应先收敛为共享实现或明确的平台适配点。
+
+深度审计后形成的授权、进程、外部网络、凭据、前端和资源上限基线见 [security-hardening.md](security-hardening.md)。架构调整不得绕过其中定义的统一应用工厂、系统 Node、无通用 shell 和双平台同步约束。

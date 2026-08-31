@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>用户管理 - KOOK Music</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet" integrity="sha384-l4UPAMHGzl7zwogLW4nOwaU2XTk6oiM1jhCRQstZEndoIiA2I5bg6fST3wzBSRBD" crossorigin="anonymous">
     <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/app.css', v='1.0') }}" rel="stylesheet">
 </head>
@@ -25,7 +25,7 @@
                         <form id="iam-create-form" class="iam-form">
                             <div class="iam-field"><label for="iam-create-username">用户名</label><input class="form-control" id="iam-create-username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_.-]+"></div>
                             <div class="iam-field"><label for="iam-create-role">角色</label><select class="form-select" id="iam-create-role"><option value="user" selected>普通用户</option><option value="admin">管理员</option></select></div>
-                            <div class="iam-field"><label for="iam-create-scopes">播放范围</label><input class="form-control" id="iam-create-scopes" value="*" placeholder="*"><small><code>*</code> = 全部；<code>guild:服务器ID</code> = 指定服务器；<code>channel:服务器ID/频道ID</code> = 指定语音频道。多个范围用逗号分隔。</small></div>
+                            <div class="iam-field"><label for="iam-create-scopes">播放范围</label><input class="form-control" id="iam-create-scopes" required placeholder="guild:服务器ID"><small><code>*</code> = 全部；<code>guild:服务器ID</code> = 指定服务器；<code>channel:服务器ID/频道ID</code> = 指定语音频道。多个范围用逗号分隔。</small></div>
                             <button class="app-header-button primary justify-content-center" type="submit"><i class="bi bi-person-plus-fill"></i><span>创建用户</span></button>
                         </form>
                         <div id="iam-message" class="iam-message" role="status" aria-live="polite"></div>

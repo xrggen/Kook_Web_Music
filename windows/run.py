@@ -9,6 +9,8 @@ import time
 import threading
 import shutil
 import asyncio
+import json
+import re
 import requests
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
@@ -35,6 +37,13 @@ NETEASE_NODE_PACKAGE = "NeteaseCloudMusicApi"
 NETEASE_NODE_VERSION = "4.25.0"
 QQ_NODE_PACKAGE = "@sansenjian/qq-music-api"
 QQ_NODE_VERSION = "2.3.1"
+NODE_PACKAGE_VERSIONS = {
+    NETEASE_NODE_PACKAGE: NETEASE_NODE_VERSION,
+    QQ_NODE_PACKAGE: QQ_NODE_VERSION,
+}
+DEFAULT_WEB_PORT = 18473
+DEFAULT_MUSIC_API_PORT = 18474
+DEFAULT_QQ_MUSIC_API_PORT = 18475
 SYSTEM_NODE_INSTALL_COMMAND = (
     f"npm install --global {NETEASE_NODE_PACKAGE}@{NETEASE_NODE_VERSION} "
     f"{QQ_NODE_PACKAGE}@{QQ_NODE_VERSION}"
@@ -59,6 +68,56 @@ def _resolve_system_executable(name):
     return None if _path_is_within(resolved, PROJECT_ROOT) else resolved
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        stream = super()._open()
+        if os.name != "nt":
+            try:
+                os.chmod(self.baseFilename, 0o600)
+            except OSError:
+                pass
+        return stream
+
+
+def _open_private_log(path):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        return os.fdopen(descriptor, "w", encoding="utf-8")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+_LOG_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|"
+    r"authorization|signature|sign|qrsig|ptqrtoken|sessdata|music[_-]?[ua])=)"
+    r"[^&#\s\"']+"
+)
+_LOG_ASSIGNMENT_SECRET_RE = re.compile(
+    r"(?i)((?:cookie|set-cookie|authorization|token|access[_-]?token|"
+    r"refresh[_-]?token|signature|qrsig|ptqrtoken|sessdata|music[_-]?[ua])"
+    r"\s*[:=]\s*[\"']?)[^\s,;\"']+"
+)
+_LOG_COOKIE_PAIR_RE = re.compile(
+    r"(?i)\b(?:MUSIC_U|MUSIC_A|SESSDATA|qqmusic_key|qm_keyst|"
+    r"psrf_qq(?:refresh|access)_(?:token|key)|bili_jct)=[^;\s,\"']+"
+)
+
+
+def _redact_log_text(value, limit=4096):
+    """在诊断输出前移除 URL、Cookie 和令牌值。"""
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = _LOG_QUERY_SECRET_RE.sub(r"\1<redacted>", text)
+    text = _LOG_ASSIGNMENT_SECRET_RE.sub(r"\1<redacted>", text)
+    text = _LOG_COOKIE_PAIR_RE.sub(
+        lambda match: match.group(0).split("=", 1)[0] + "=<redacted>",
+        text,
+    )
+    return text[:limit]
+
+
 NODE_EXECUTABLE = _resolve_system_executable("node")
 NPM_EXECUTABLE = _resolve_system_executable("npm")
 
@@ -75,7 +134,7 @@ if not any(
     and os.path.abspath(getattr(handler, "baseFilename", "")) == _log_path
     for handler in logging.getLogger().handlers
 ):
-    _file_handler = RotatingFileHandler(
+    _file_handler = _PrivateRotatingFileHandler(
         _log_path,
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
@@ -109,7 +168,7 @@ def _system_node_version():
         version = result.stdout.strip().lstrip("v")
         return version, int(version.split(".", 1)[0])
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        logger.error("[Node环境] 无法读取系统 Node 版本: %s", exc)
+        logger.error("[Node环境] 无法读取系统 Node 版本: %s", type(exc).__name__)
         return None, None
 
 
@@ -132,7 +191,7 @@ def _system_node_modules():
         )
         module_root = os.path.realpath(result.stdout.strip())
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.error("[Node环境] 无法读取系统 npm 全局模块目录: %s", exc)
+        logger.error("[Node环境] 无法读取系统 npm 全局模块目录: %s", type(exc).__name__)
         _system_node_modules_cache = ""
         return None
     if not module_root or _path_is_within(module_root, PROJECT_ROOT):
@@ -213,9 +272,30 @@ def _system_node_environment(api_dir, port, package_name):
             SYSTEM_NODE_INSTALL_COMMAND,
         )
         return None
+    try:
+        with open(os.path.join(api_dir, "package.json"), "r", encoding="utf-8") as package_file:
+            installed_version = str(json.load(package_file).get("version", "")).strip()
+    except (OSError, ValueError, TypeError) as error:
+        logger.error(
+            "[Node环境] 无法读取系统全局包 %s 的版本: %s",
+            package_name,
+            type(error).__name__,
+        )
+        return None
+    expected_version = NODE_PACKAGE_VERSIONS.get(package_name)
+    if expected_version and installed_version != expected_version:
+        logger.error(
+            "[Node环境] 系统全局包 %s 版本不匹配：需要 %s，当前 %s；请执行: %s",
+            package_name,
+            expected_version,
+            installed_version or "未知",
+            SYSTEM_NODE_INSTALL_COMMAND,
+        )
+        return None
 
     child_env = os.environ.copy()
     child_env["PORT"] = str(port)
+    child_env["HOST"] = "127.0.0.1"
     child_env["PATH"] = _system_node_path()
     child_env["NODE"] = NODE_EXECUTABLE
     child_env["NODE_PATH"] = module_root
@@ -224,6 +304,18 @@ def _system_node_environment(api_dir, port, package_name):
     child_env.pop("npm_execpath", None)
     child_env.pop("npm_node_execpath", None)
     return child_env
+
+
+def _env_port(name, default):
+    try:
+        value = int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        logger.warning("[端口] %s 配置无效，使用默认值 %d", name, default)
+        return default
+    if not 1 <= value <= 65535:
+        logger.warning("[端口] %s 超出 1-65535 范围，使用默认值 %d", name, default)
+        return default
+    return value
 
 
 def _process_belongs_to_dir(pid: int, expected_dir: str) -> bool:
@@ -239,7 +331,9 @@ def _process_belongs_to_dir(pid: int, expected_dir: str) -> bool:
         expected = os.path.normcase(os.path.realpath(expected_dir))
         return process_dir == expected
     except (psutil.Error, OSError) as exc:
-        logger.warning("[端口清理] 无法验证 PID=%s 的归属: %s", pid, exc)
+        logger.warning(
+            "[端口清理] 无法验证 PID=%s 的归属: %s", pid, type(exc).__name__
+        )
         return False
 
 
@@ -284,7 +378,9 @@ def _kill_port(port: int, expected_dir: str):
                     result.returncode,
                 )
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.warning("[端口清理] 检查端口 %d 失败: %s", port, exc)
+        logger.warning(
+            "[端口清理] 检查端口 %d 失败: %s", port, type(exc).__name__
+        )
 
 
 def _terminate_process_tree(process, label):
@@ -339,28 +435,30 @@ def _qq_api_dir():
 def start_music_api():
     """启动本地网易云音乐API服务"""
     global _music_api_process
+    port = _env_port("MUSIC_API_PORT", DEFAULT_MUSIC_API_PORT)
     api_dir = _api_dir()
     if not os.path.isdir(api_dir):
         logger.warning("系统网易云音乐API包不存在，跳过启动: %s", api_dir)
         logger.warning("请执行: %s", SYSTEM_NODE_INSTALL_COMMAND)
-        logger.warning("音乐API将使用 .env 中配置的 MUSIC_API_BASE")
+        logger.warning("网易云音乐功能保持不可用，项目不会回退到远程API")
         return
-    child_env = _system_node_environment(api_dir, 3000, NETEASE_NODE_PACKAGE)
+    child_env = _system_node_environment(api_dir, port, NETEASE_NODE_PACKAGE)
     if child_env is None:
         return
 
     # 清理占用本服务端口的残留进程（Windows），避免误杀其他Node应用
     if sys.platform == "win32":
-        _kill_port(3000, api_dir)
+        _kill_port(port, api_dir)
 
     logger.info("正在启动系统网易云音乐API服务: %s", api_dir)
     api_log = os.path.join(APP_DIR, "netease_api_output.log")
-    log_file = open(api_log, "w")
+    log_file = _open_private_log(api_log)
 
     logger.info(
-        "[API启动] 使用系统 Node=%s，全局模块=%s (PORT=3000)",
+        "[API启动] 使用系统 Node=%s，全局模块=%s (PORT=%d)",
         NODE_EXECUTABLE,
         _system_node_modules(),
+        port,
     )
     if sys.platform == "win32":
         _music_api_process = subprocess.Popen(
@@ -393,11 +491,11 @@ def start_music_api():
                 tail = f.read()
             if tail:
                 for line in tail.strip().split("\n")[-5:]:
-                    logger.error("[API启动] %s", line)
+                    logger.error("[API启动] %s", _redact_log_text(line))
         except Exception:
             pass
         _music_api_process = None
-        logger.warning("[API启动] 回退使用 MUSIC_API_BASE 配置的地址")
+        logger.warning("[API启动] 网易云音乐功能保持不可用，不回退到远程API")
         return
 
     # 轮询等待API就绪（最多10次，每次间隔1秒，请求超时2秒）
@@ -410,7 +508,11 @@ def start_music_api():
             _music_api_process = None
             return
         try:
-            r = requests.get("http://localhost:3000/login/status", timeout=(2, 2))
+            r = requests.get(
+                f"http://127.0.0.1:{port}/login/status",
+                timeout=(2, 2),
+                allow_redirects=False,
+            )
             if r.status_code == 200:
                 ready = True
                 logger.info("[API启动] 服务已就绪 (等待 %ds)", i + 2)
@@ -441,6 +543,7 @@ def stop_music_api():
 def start_qq_music_api():
     """启动本地QQ音乐API服务"""
     global _qq_music_api_process
+    port = _env_port("QQ_MUSIC_API_PORT", DEFAULT_QQ_MUSIC_API_PORT)
     api_dir = _qq_api_dir()
     if not os.path.isdir(api_dir):
         logger.warning("系统QQ音乐API包不存在，跳过启动: %s", api_dir)
@@ -453,21 +556,27 @@ def start_qq_music_api():
     if not os.path.isfile(dist_main):
         logger.error("系统QQ音乐API包缺少运行产物: %s", dist_main)
         return
-    child_env = _system_node_environment(api_dir, 3200, QQ_NODE_PACKAGE)
+    child_env = _system_node_environment(api_dir, port, QQ_NODE_PACKAGE)
     if child_env is None:
         return
     if sys.platform == "win32":
-        _kill_port(3200, api_dir)
+        _kill_port(port, api_dir)
 
     logger.info("正在启动系统QQ音乐API服务: %s", api_dir)
     api_log = os.path.join(APP_DIR, "qq_api_output.log")
-    log_file = open(api_log, "w")
-    cmd = [NODE_EXECUTABLE, os.path.realpath(dist_main)]
+    log_file = _open_private_log(api_log)
+    qq_bootstrap = (
+        "const loaded=require(process.argv[1]);"
+        "const app=loaded.default||loaded;"
+        "app.listen(Number(process.env.PORT),'127.0.0.1');"
+    )
+    cmd = [NODE_EXECUTABLE, "-e", qq_bootstrap, os.path.realpath(dist_main)]
 
     logger.info(
-        "[QQ-API启动] 使用系统 Node=%s，全局模块=%s (PORT=3200)",
+        "[QQ-API启动] 使用系统 Node=%s，全局模块=%s (PORT=%d)",
         NODE_EXECUTABLE,
         _system_node_modules(),
+        port,
     )
     if sys.platform == "win32":
         _qq_music_api_process = subprocess.Popen(
@@ -499,7 +608,7 @@ def start_qq_music_api():
                 tail = f.read()
             if tail:
                 for line in tail.strip().split("\n")[-5:]:
-                    logger.error("[QQ-API启动] %s", line)
+                    logger.error("[QQ-API启动] %s", _redact_log_text(line))
         except Exception:
             pass
         _qq_music_api_process = None
@@ -514,8 +623,12 @@ def start_qq_music_api():
             _qq_music_api_process = None
             return
         try:
-            r = requests.get("http://localhost:3200/getSearchByKey/test", timeout=(2, 2))
-            if r.status_code in (200, 400, 502):
+            r = requests.get(
+                f"http://127.0.0.1:{port}/getSearchByKey/test",
+                timeout=(2, 2),
+                allow_redirects=False,
+            )
+            if r.status_code == 200:
                 ready = True
                 logger.info("[QQ-API启动] 服务已就绪 (等待 %ds)", i + 2)
                 break
@@ -558,10 +671,14 @@ def _env_int(name, default, minimum=1):
         return int(default)
 
 
-def _probe_url(url):
+def _probe_url(url, acceptable_statuses=(200,)):
     try:
-        requests.get(url, timeout=(1.5, 2.5))
-        return True
+        response = requests.get(
+            url,
+            timeout=(1.5, 2.5),
+            allow_redirects=False,
+        )
+        return response.status_code in acceptable_statuses
     except requests.RequestException:
         return False
 
@@ -572,8 +689,8 @@ def _web_probe_url():
         host = "127.0.0.1"
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
-    port = _env_int("PORT", 5000)
-    return f"http://{host}:{port}/api/debug"
+    port = _env_port("PORT", DEFAULT_WEB_PORT)
+    return f"http://{host}:{port}/healthz"
 
 
 def _dependency_failures():
@@ -583,13 +700,13 @@ def _dependency_failures():
             "netease_api",
             _api_dir(),
             _music_api_process,
-            "http://127.0.0.1:3000/login/status",
+            f"http://127.0.0.1:{_env_port('MUSIC_API_PORT', DEFAULT_MUSIC_API_PORT)}/login/status",
         ),
         (
             "qq_music_api",
             _qq_api_dir(),
             _qq_music_api_process,
-            "http://127.0.0.1:3200/",
+            f"http://127.0.0.1:{_env_port('QQ_MUSIC_API_PORT', DEFAULT_QQ_MUSIC_API_PORT)}/getSearchByKey/test",
         ),
     )
     for name, service_dir, process, url in services:
@@ -626,8 +743,10 @@ def _repair_dependencies(failures, counters, last_repairs, cooldown):
             else:
                 stop_qq_music_api()
                 start_qq_music_api()
-        except Exception:
-            logger.exception("[看门狗] 单独恢复 %s 失败", service)
+        except Exception as exc:
+            logger.error(
+                "[看门狗] 单独恢复 %s 失败: %s", service, type(exc).__name__
+            )
 
 
 def _build_restart_command():
@@ -673,8 +792,10 @@ def _cleanup_playback_before_restart(timeout=20.0):
     def _runner():
         try:
             asyncio.run(recovery())
-        except Exception:
-            logger.exception("[看门狗] 重启前清理播放会话失败")
+        except Exception as exc:
+            logger.error(
+                "[看门狗] 重启前清理播放会话失败: %s", type(exc).__name__
+            )
 
     worker = threading.Thread(
         target=_runner,
@@ -718,11 +839,7 @@ def _perform_full_restart(reasons):
     stop_qq_music_api()
 
     command = _build_restart_command()
-    logger.critical(
-        "[看门狗] 重启命令=%s；工作目录=%s",
-        command,
-        APP_DIR,
-    )
+    logger.critical("[看门狗] 已准备完整重启；工作目录=%s", APP_DIR)
     for handler in logging.getLogger().handlers:
         try:
             handler.flush()
@@ -733,7 +850,10 @@ def _perform_full_restart(reasons):
     try:
         os.execve(PYTHON_EXECUTABLE, command, environment)
     except Exception as exec_error:
-        logger.exception("[看门狗] 原位重启失败，尝试启动替代进程: %s", exec_error)
+        logger.error(
+            "[看门狗] 原位重启失败，尝试启动替代进程: %s",
+            type(exec_error).__name__,
+        )
         try:
             creation_flags = (
                 subprocess.CREATE_NEW_PROCESS_GROUP
@@ -747,8 +867,10 @@ def _perform_full_restart(reasons):
                 creationflags=creation_flags,
                 close_fds=True,
             )
-        except Exception:
-            logger.critical("[看门狗] 替代进程启动失败", exc_info=True)
+        except Exception as exc:
+            logger.critical(
+                "[看门狗] 替代进程启动失败: %s", type(exc).__name__
+            )
             _restart_in_progress.clear()
             return "failed"
         logging.shutdown()
@@ -863,7 +985,7 @@ def main():
     _start_watchdog_once()
 
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 5000))
+    port = _env_port("PORT", DEFAULT_WEB_PORT)
     debug = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
     logger.info("启动服务器: http://%s:%d [DEBUG: %s]", host, port, debug)
     application.run(
@@ -878,5 +1000,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        logger.critical("启动失败: %s", error, exc_info=True)
+        logger.critical("启动失败: %s", type(error).__name__)
         sys.exit(1)

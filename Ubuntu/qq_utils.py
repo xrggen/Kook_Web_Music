@@ -1,35 +1,99 @@
 import requests
 import logging
-import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
-    from .config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+    from .config import QQ_MUSIC_API_BASE, MAX_PLAYLIST_IMPORT_TRACKS
+    from .qq_credential import load_qq_cookie as _load_managed_qq_cookie
 except ImportError:
-    from config import QQ_MUSIC_API_BASE, QQ_COOKIE_TXT_PATH
+    from config import QQ_MUSIC_API_BASE, MAX_PLAYLIST_IMPORT_TRACKS
+    from qq_credential import load_qq_cookie as _load_managed_qq_cookie
 
 logger = logging.getLogger(__name__)
 
+MAX_SEARCH_KEYWORD_LENGTH = 256
+MAX_SEARCH_LIMIT = 30
+MAX_SEARCH_PAGE = 10_000
+MAX_ACCOUNT_PLAYLIST_LIMIT = 100
+MAX_ACCOUNT_PLAYLIST_OFFSET = 1_000_000
+MAX_NUMERIC_ID_LENGTH = 20
+MAX_SONGMID_LENGTH = 64
+MAX_METADATA_TEXT_LENGTH = 512
+_NUMERIC_ID_RE = re.compile(r"[0-9]+")
+_SONGMID_RE = re.compile(r"[A-Za-z0-9]{1,64}")
+
+
+def _safe_text(value, limit=MAX_METADATA_TEXT_LENGTH):
+    text = str(value or "")
+    text = "".join(
+        " " if ord(char) < 32 or ord(char) == 127 else char
+        for char in text
+    )
+    return text.strip()[:limit]
+
+
+def _bounded_int(value, minimum, maximum):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str):
+        if value != value.strip() or not value.isascii() or not value.isdigit():
+            return None
+        if len(value) > 12:
+            return None
+        parsed = int(value)
+    else:
+        return None
+    return parsed if minimum <= parsed <= maximum else None
+
+
+def _normalize_numeric_id(value, label="ID"):
+    if isinstance(value, bool):
+        return ""
+    text = str(value) if isinstance(value, int) else value
+    if (
+        not isinstance(text, str)
+        or not text
+        or text != text.strip()
+        or len(text) > MAX_NUMERIC_ID_LENGTH
+        or not text.isascii()
+        or _NUMERIC_ID_RE.fullmatch(text) is None
+        or int(text) <= 0
+    ):
+        logger.warning("[QQ] 非法%s", label)
+        return ""
+    return text
+
+
+def _normalize_songmid(value):
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if len(value) > MAX_SONGMID_LENGTH or _SONGMID_RE.fullmatch(value) is None:
+        return ""
+    return value
+
 
 def load_qq_cookie():
-    """读取QQ音乐Cookie"""
-    try:
-        if os.path.exists(QQ_COOKIE_TXT_PATH):
-            with open(QQ_COOKIE_TXT_PATH, "r", encoding="utf-8") as f:
-                return f.read().strip()
-    except Exception:
-        pass
-    return ""
+    """通过统一凭证存储读取已经校验的QQ音乐Cookie。"""
+    return _load_managed_qq_cookie()
 
 
 def build_qq_params(extra=None):
-    """构建QQ音乐API请求参数，含cookie（通过?cookie=传参）"""
-    params = {}
+    """构建不含凭据的QQ音乐API查询参数。"""
+    return dict(extra or {})
+
+
+def build_qq_headers(extra=None):
+    """通过请求头向本机QQ API传递Cookie，避免凭据进入URL和访问日志。"""
+    headers = {}
     cookie_str = load_qq_cookie()
     if cookie_str:
-        params["cookie"] = cookie_str
+        headers["Cookie"] = cookie_str
     if extra:
-        params.update(extra)
-    return params
+        headers.update(extra)
+    return headers
 
 
 _verify_cache = {"ts": 0, "result": None}
@@ -127,70 +191,127 @@ def _format_expiry(seconds):
 def _normalize_song(item):
     """QQ音乐歌曲对象 → 内部统一格式 {id, name, ar, al}
     id 字段填入 songmid（QQ音乐播放URL用的主键）"""
+    if not isinstance(item, dict):
+        return {"id": "", "name": "", "ar": [], "al": {"name": ""}}
     singers = item.get("singer", [])
+    if not isinstance(singers, list):
+        singers = []
     return {
-        "id": item.get("songmid", ""),
-        "name": item.get("songname", ""),
-        "ar": [{"name": s.get("name", "")} for s in singers],
-        "al": {"name": item.get("albumname", "")},
+        "id": _normalize_songmid(item.get("songmid", "")),
+        "name": _safe_text(item.get("songname", "")),
+        "ar": [
+            {"name": _safe_text(s.get("name", ""))}
+            for s in singers if isinstance(s, dict)
+        ],
+        "al": {"name": _safe_text(item.get("albumname", ""))},
     }
 
 
 def search_qq_music(keyword, limit=10, page=1):
     """搜索QQ音乐"""
     import urllib.parse
+    if not isinstance(keyword, str):
+        return []
+    keyword = keyword.strip()
+    if (
+        not keyword
+        or len(keyword) > MAX_SEARCH_KEYWORD_LENGTH
+        or any(ord(char) < 32 or ord(char) == 127 for char in keyword)
+    ):
+        return []
+    safe_limit = _bounded_int(limit, 1, MAX_SEARCH_LIMIT)
+    safe_page = _bounded_int(page, 1, MAX_SEARCH_PAGE)
+    if safe_limit is None or safe_page is None:
+        return []
     encoded_key = urllib.parse.quote(keyword, safe='')
-    url = f"{QQ_MUSIC_API_BASE}/getSearchByKey/{encoded_key}?limit={limit}&page={page}"
+    url = f"{QQ_MUSIC_API_BASE}/getSearchByKey/{encoded_key}"
     logger.info(f"[QQ搜索] 请求: GET {url}")
     try:
-        res = requests.get(url, params=build_qq_params(), timeout=15)
+        res = requests.get(
+            url,
+            params=build_qq_params({"limit": safe_limit, "page": safe_page}),
+            headers=build_qq_headers(),
+            timeout=15,
+            allow_redirects=False,
+        )
         data = res.json()
         response = data.get("response", data)
         song_list = response.get("data", {}).get("song", {}).get("list", [])
-        songs = [_normalize_song(item) for item in song_list]
+        if not isinstance(song_list, list):
+            return []
+        songs = [
+            song for song in (_normalize_song(item) for item in song_list[:safe_limit])
+            if song["id"]
+        ]
         logger.info(f"[QQ搜索] 状态={res.status_code} 结果数={len(songs)}")
         if songs:
             top = songs[0]
-            logger.info(f"[QQ搜索] 首条: {top.get('name','?')} - {top.get('ar',[{}])[0].get('name','?')} (id={top.get('id')})")
+            logger.info(
+                "[QQ搜索] 首条 name=%r artist=%r id=%r",
+                str(top.get('name', '?'))[:120],
+                str(top.get('ar', [{}])[0].get('name', '?'))[:120],
+                str(top.get('id', ''))[:64],
+            )
         return songs
     except Exception as e:
-        logger.error(f"[QQ搜索] 异常: {e}")
+        logger.error(f"[QQ搜索] 异常: {type(e).__name__}")
         return []
 
 
 def get_qq_music_url(songmid, quality="128"):
     """获取QQ音乐歌曲播放URL"""
+    songmid = _normalize_songmid(songmid)
+    if not songmid:
+        return ""
+    if not isinstance(quality, str) or not quality or len(quality) > 16:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", quality) is None:
+        return ""
     params = build_qq_params({"quality": quality})
     url = f"{QQ_MUSIC_API_BASE}/getMusicPlay/{songmid}"
     logger.info(f"[QQ取链] 请求: GET {url} quality={quality}")
     try:
-        res = requests.get(url, params=params, timeout=15)
+        res = requests.get(url, params=params, headers=build_qq_headers(), timeout=15, allow_redirects=False)
         data = res.json()
         response = data.get("response", data)
         play_urls = response.get("data", {}).get("playUrl", {})
+        if not isinstance(play_urls, dict):
+            return ""
         entry = play_urls.get(songmid, {})
+        if not isinstance(entry, dict):
+            return ""
         music_url = entry.get("url", "")
-        error_msg = entry.get("error", "")
+        error_msg = _safe_text(entry.get("error", ""), 160)
         logger.info(f"[QQ取链] 状态={res.status_code} {'成功' if music_url else '失败(无链接)'}"
                     f"{' error=' + error_msg if error_msg else ''}")
-        if music_url:
-            logger.info(f"[QQ取链] URL: {music_url[:80]}...")
-        elif error_msg:
+        if not music_url and error_msg:
             logger.warning(f"[QQ取链] 服务端错误: {error_msg}")
         return music_url
     except Exception as e:
-        logger.error(f"[QQ取链] 异常: {e}")
+        logger.error(f"[QQ取链] 异常: {type(e).__name__}")
         return ""
 
 
 def _parse_qq_playlist_detail(data):
     """从 qq-music-api getSongListDetail 响应中提取歌单信息
     返回 (name, songlist) 或 ({}, [])"""
+    if not isinstance(data, dict):
+        return {}, []
     response = data.get("response", data)
+    if not isinstance(response, dict):
+        return {}, []
     cdlist = response.get("cdlist", [])
     if cdlist and isinstance(cdlist, list):
         detail = cdlist[0]
-        return detail, detail.get("songlist", [])
+        if not isinstance(detail, dict):
+            return {}, []
+        songlist = detail.get("songlist", [])
+        if not isinstance(songlist, list):
+            return detail, []
+        return detail, [
+            item for item in songlist[:MAX_PLAYLIST_IMPORT_TRACKS]
+            if isinstance(item, dict)
+        ]
     return {}, []
 
 
@@ -233,11 +354,10 @@ def _qq_api_direct(disstid):
     无需 cookie，支持任意公开歌单，支持分页（>30首）。"""
     import json as _json, time as _time
 
-    try:
-        playlist_id = int(disstid)
-    except (TypeError, ValueError):
-        logger.warning("[QQ歌单直连] 非法歌单ID: %r", disstid)
+    playlist_id_text = _normalize_numeric_id(disstid, "歌单ID")
+    if not playlist_id_text:
         return {}, []
+    playlist_id = int(playlist_id_text)
 
     def _fetch_page(song_begin, song_num, preferred_platform=None):
         """获取单页歌单数据，尝试多个 platform"""
@@ -267,7 +387,7 @@ def _qq_api_direct(disstid):
                 res = requests.post(url, data=body, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Content-Type': 'application/json',
-                }, timeout=(min(3, remaining), min(8, remaining)))
+                }, timeout=(min(3, remaining), min(8, remaining)), allow_redirects=False)
                 # 108 字节 = 错误响应（GoMusic 经验值）
                 if len(res.content) == 108:
                     continue
@@ -281,16 +401,27 @@ def _qq_api_direct(disstid):
 
     # 先拉第一页
     data, preferred_platform = _fetch_page(0, 30)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return {}, []
 
     dirinfo = data.get('dirinfo', {})
-    all_songs = list(data.get('songlist', []))
+    if not isinstance(dirinfo, dict):
+        dirinfo = {}
+    raw_first_page = data.get('songlist', [])
+    if not isinstance(raw_first_page, list):
+        return {}, []
+    all_songs = [
+        item for item in raw_first_page[:30]
+        if isinstance(item, dict)
+    ]
     try:
-        reported_total = max(int(dirinfo.get('songnum', len(all_songs))), len(all_songs))
+        reported_total = max(
+            int(dirinfo.get('songnum', len(raw_first_page))),
+            len(raw_first_page),
+        )
     except (TypeError, ValueError):
         reported_total = len(all_songs)
-    total = min(reported_total, 10000)
+    total = min(reported_total, MAX_PLAYLIST_IMPORT_TRACKS)
     if total < reported_total:
         logger.warning("[QQ歌单直连] 歌曲数 %d 超过安全上限，截断为 %d", reported_total, total)
 
@@ -312,11 +443,19 @@ def _qq_api_direct(disstid):
             min(30, total - len(all_songs)),
             preferred_platform,
         )
-        if not page:
+        if not isinstance(page, dict) or not page:
             break
-        page_songs = page.get('songlist', [])
-        if not page_songs:
+        raw_page_songs = page.get('songlist', [])
+        if not isinstance(raw_page_songs, list) or not raw_page_songs:
             logger.warning("[QQ歌单直连] 分页提前返回空列表，停止继续拉取")
+            break
+        requested = min(30, total - len(all_songs))
+        page_songs = [
+            item for item in raw_page_songs[:requested]
+            if isinstance(item, dict)
+        ]
+        if not page_songs:
+            logger.warning("[QQ歌单直连] 分页没有有效歌曲，停止继续拉取")
             break
         fingerprint = _json.dumps(
             page_songs,
@@ -342,42 +481,50 @@ def _qq_api_direct(disstid):
 
 def get_qq_playlist(disstid):
     """获取QQ音乐歌单信息，返回 {name, trackCount}"""
+    playlist_id = _normalize_numeric_id(disstid, "歌单ID")
+    if not playlist_id:
+        return {}
     # 优先直连 u6.y.qq.com 签名 API（无需 cookie，支持任何公开歌单）
-    dirinfo, songlist = _qq_api_direct(disstid)
+    dirinfo, songlist = _qq_api_direct(playlist_id)
     if songlist:
         return {"name": dirinfo.get('title', '未知歌单'), "trackCount": len(songlist)}
 
     # 回退 qq-music-api
-    url = f"{QQ_MUSIC_API_BASE}/getSongListDetail?disstid={disstid}"
+    url = f"{QQ_MUSIC_API_BASE}/getSongListDetail"
+    params = build_qq_params({"disstid": playlist_id})
     logger.info(f"[QQ歌单] 直连失败，回退本地API: GET {url}")
     try:
-        res = requests.get(url, params=build_qq_params(), timeout=30)
+        res = requests.get(url, params=params, headers=build_qq_headers(), timeout=30, allow_redirects=False)
         data = res.json()
         detail, songlist = _parse_qq_playlist_detail(data)
         name = detail.get("dissname", "未知歌单")
-        logger.info(f"[QQ歌单] 状态={res.status_code} 名称={name} 歌曲数={len(songlist)}")
+        logger.info("[QQ歌单] 状态=%s 名称=%r 歌曲数=%d", res.status_code, str(name)[:120], len(songlist))
         return {"name": name, "trackCount": len(songlist)}
     except Exception as e:
-        logger.error(f"[QQ歌单] 异常: {e}")
+        logger.error(f"[QQ歌单] 异常: {type(e).__name__}")
         return {}
 
 
 def get_qq_playlist_all_tracks(disstid):
     """获取QQ音乐歌单中所有歌曲（支持分页，无上限）"""
-    dirinfo, songlist = _qq_api_direct(disstid)
+    playlist_id = _normalize_numeric_id(disstid, "歌单ID")
+    if not playlist_id:
+        return []
+    dirinfo, songlist = _qq_api_direct(playlist_id)
     if songlist:
-        return songlist
+        return songlist[:MAX_PLAYLIST_IMPORT_TRACKS]
 
-    url = f"{QQ_MUSIC_API_BASE}/getSongListDetail?disstid={disstid}"
+    url = f"{QQ_MUSIC_API_BASE}/getSongListDetail"
+    params = build_qq_params({"disstid": playlist_id})
     logger.info(f"[QQ歌单分页] 直连失败，回退本地API: GET {url}")
     try:
-        res = requests.get(url, params=build_qq_params(), timeout=30)
+        res = requests.get(url, params=params, headers=build_qq_headers(), timeout=30, allow_redirects=False)
         data = res.json()
         detail, songlist = _parse_qq_playlist_detail(data)
-        logger.info(f"[QQ歌单分页] 歌单={detail.get('dissname','?')} 共 {len(songlist)} 首")
-        return songlist
+        logger.info("[QQ歌单分页] 歌单=%r 共 %d 首", str(detail.get('dissname', '?'))[:120], len(songlist))
+        return songlist[:MAX_PLAYLIST_IMPORT_TRACKS]
     except Exception as e:
-        logger.error(f"[QQ歌单分页] 异常: {e}")
+        logger.error(f"[QQ歌单分页] 异常: {type(e).__name__}")
         return []
 
 
@@ -387,10 +534,18 @@ def get_qq_playlist_urls(disstid):
     result = []
     logger.info(f"[QQ歌单处理] 处理 {len(tracks)} 首歌曲...")
     for track in tracks:
-        songmid = track.get("mid", "") or track.get("songmid", "")
-        song_name = track.get("name", "") or track.get("songname", "")
+        if not isinstance(track, dict):
+            continue
+        songmid = _normalize_songmid(track.get("mid", "") or track.get("songmid", ""))
+        if not songmid:
+            continue
+        song_name = _safe_text(track.get("name", "") or track.get("songname", ""))
         singers = track.get("singer", [])
-        artist_name = singers[0].get("name", "") if singers else ""
+        artist_name = (
+            _safe_text(singers[0].get("name", ""))
+            if isinstance(singers, list) and singers and isinstance(singers[0], dict)
+            else ""
+        )
         song_marker = f"QQ_PLAYLIST_SONG:{songmid}:{song_name}:{artist_name}"
         result.append({
             "id": songmid,
@@ -405,12 +560,23 @@ def get_qq_playlist_urls(disstid):
 def resolve_qq_marker_batch(markers, count=5):
     """批量解析 QQ_PLAYLIST_SONG: 标记为实际播放URL（并发请求）
     返回 {marker: url} dict"""
+    safe_count = _bounded_int(count, 1, 20)
+    if safe_count is None or not isinstance(markers, (list, tuple)):
+        return {}
     resolved = {}
     to_resolve = []
     for m in markers:
-        if m.startswith("QQ_PLAYLIST_SONG:") and m not in resolved:
+        if not isinstance(m, str):
+            continue
+        parts = m.split(":", 2)
+        if (
+            len(parts) >= 2
+            and parts[0] == "QQ_PLAYLIST_SONG"
+            and _normalize_songmid(parts[1])
+            and m not in resolved
+        ):
             to_resolve.append(m)
-            if len(to_resolve) >= count:
+            if len(to_resolve) >= safe_count:
                 break
     if not to_resolve:
         return resolved
@@ -418,9 +584,11 @@ def resolve_qq_marker_batch(markers, count=5):
     logger.info(f"[QQ批量取链] 解析 {len(to_resolve)} 个标记")
 
     def fetch_one(marker):
-        parts = marker.split(":")
+        parts = marker.split(":", 2)
         if len(parts) >= 2:
-            songmid = parts[1]
+            songmid = _normalize_songmid(parts[1])
+            if not songmid:
+                return marker, ""
             url = get_qq_music_url(songmid)
             return marker, url
         return marker, ""
@@ -433,7 +601,7 @@ def resolve_qq_marker_batch(markers, count=5):
                 if url:
                     resolved[marker] = url
             except Exception as e:
-                logger.error(f"[QQ批量取链] 并发异常: {e}")
+                logger.error(f"[QQ批量取链] 并发异常: {type(e).__name__}")
 
     logger.info(f"[QQ批量取链] 成功 {len(resolved)}/{len(to_resolve)}")
     return resolved
@@ -441,13 +609,19 @@ def resolve_qq_marker_batch(markers, count=5):
 
 def refill_qq_playlist_queue(channel_id, play_list_dict, count=5, lock=None):
     """检查播放队列并将前 count 个 QQ_PLAYLIST_SONG 标记替换为真实URL"""
+    safe_count = _bounded_int(count, 1, 20)
+    if safe_count is None or not isinstance(play_list_dict, dict):
+        return 0
+
     def collect_markers():
         state = play_list_dict.get(channel_id)
         queue = state.get("play_list", []) if state else []
         return [
             item["file"]
             for item in queue
-            if item.get("file", "").startswith("QQ_PLAYLIST_SONG:")
+            if isinstance(item, dict)
+            and isinstance(item.get("file", ""), str)
+            and item.get("file", "").startswith("QQ_PLAYLIST_SONG:")
         ]
 
     if lock is not None:
@@ -458,17 +632,19 @@ def refill_qq_playlist_queue(channel_id, play_list_dict, count=5, lock=None):
     if not markers:
         return 0
 
-    resolved = resolve_qq_marker_batch(markers, count)
+    resolved = resolve_qq_marker_batch(markers, safe_count)
     def apply_resolved():
         state = play_list_dict.get(channel_id)
         queue = state.get("play_list", []) if state else []
         replaced = 0
         for item in queue:
+            if not isinstance(item, dict):
+                continue
             marker = item.get("file", "")
             if marker in resolved:
                 item["file"] = resolved[marker]
                 replaced += 1
-                if replaced >= count:
+                if replaced >= safe_count:
                     break
         return replaced
 
@@ -484,10 +660,19 @@ def refill_qq_playlist_queue(channel_id, play_list_dict, count=5, lock=None):
 
 def get_qq_user_avatar(uin):
     """获取QQ用户头像URL"""
-    url = f"{QQ_MUSIC_API_BASE}/user/getUserAvatar?uin={uin}&size=140"
+    uin = _normalize_numeric_id(uin, "用户ID")
+    if not uin:
+        return ""
+    url = f"{QQ_MUSIC_API_BASE}/user/getUserAvatar"
     logger.info(f"[QQ头像] 请求: GET {url}")
     try:
-        res = requests.get(url, params=build_qq_params(), timeout=10)
+        res = requests.get(
+            url,
+            params=build_qq_params({"uin": uin, "size": 140}),
+            headers=build_qq_headers(),
+            timeout=10,
+            allow_redirects=False,
+        )
         data = res.json()
         response = data.get("response", data)
         inner = response.get("data", response)
@@ -495,7 +680,7 @@ def get_qq_user_avatar(uin):
         logger.info(f"[QQ头像] {'成功' if avatar else '失败'}")
         return avatar
     except Exception as e:
-        logger.error(f"[QQ头像] 异常: {e}")
+        logger.error(f"[QQ头像] 异常: {type(e).__name__}")
         return ""
 
 
@@ -514,27 +699,36 @@ def _parse_subtitle(subtitle):
 
 def get_qq_user_playlists(uin, offset=0, limit=30):
     """获取QQ用户歌单列表，返回 [{id, name, cover, trackCount, playCount}]"""
+    uin = _normalize_numeric_id(uin, "用户ID")
+    safe_offset = _bounded_int(offset, 0, MAX_ACCOUNT_PLAYLIST_OFFSET)
+    safe_limit = _bounded_int(limit, 1, MAX_ACCOUNT_PLAYLIST_LIMIT)
+    if not uin or safe_offset is None or safe_limit is None:
+        return []
     url = f"{QQ_MUSIC_API_BASE}/user/getUserPlaylists"
-    params = build_qq_params({"uin": uin, "offset": offset, "limit": limit})
+    params = build_qq_params({"uin": uin, "offset": safe_offset, "limit": safe_limit})
     logger.info(f"[QQ歌单列表] 请求: GET {url} uin={uin}")
     try:
-        res = requests.get(url, params=params, timeout=15)
+        res = requests.get(url, params=params, headers=build_qq_headers(), timeout=15, allow_redirects=False)
         data = res.json()
         response = data.get("response", data)
         inner = response.get("data", response)
         playlist_list = inner.get("playlists", [])
+        if not isinstance(playlist_list, list):
+            return []
         result = []
-        for pl in playlist_list:
+        for pl in playlist_list[:safe_limit]:
+            if not isinstance(pl, dict):
+                continue
             tc, pc = _parse_subtitle(pl.get("subtitle", ""))
             result.append({
-                "id": str(pl.get("dissid", pl.get("dirid", ""))),
-                "name": pl.get("title", pl.get("dissname", "未知歌单")),
-                "cover": pl.get("picurl", pl.get("diss_cover", pl.get("imgurl", ""))),
+                "id": _safe_text(pl.get("dissid", pl.get("dirid", "")), 64),
+                "name": _safe_text(pl.get("title", pl.get("dissname", "未知歌单"))),
+                "cover": _safe_text(pl.get("picurl", pl.get("diss_cover", pl.get("imgurl", ""))), 2048),
                 "trackCount": tc,
                 "playCount": pc,
             })
         logger.info(f"[QQ歌单列表] 共 {len(result)} 个歌单")
         return result
     except Exception as e:
-        logger.error(f"[QQ歌单列表] 异常: {e}")
+        logger.error(f"[QQ歌单列表] 异常: {type(e).__name__}")
         return []

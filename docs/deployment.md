@@ -6,19 +6,21 @@
 
 仓库内不得存在 Node 可执行文件、Node API 源码或 `node_modules`。`run.py` 只接受项目目录外的系统 Node/npm。
 
+从旧版本升级前先阅读 [安全审计修复与加固基线](security-hardening.md#兼容性与部署影响)。该基线包含 Bot 默认拒绝、`/cmd` 删除、资源 ID 冲突拒绝、媒体 URL 限制、凭据权限收紧和端口变化等兼容性影响。
+
 默认端口：
 
 | 服务 | 地址 |
 |---|---|
-| 网易云 API | `127.0.0.1:3000` |
-| QQ 音乐 API | `127.0.0.1:3200` |
-| Flask Web | `HOST:PORT`，默认 `0.0.0.0:5000` |
+| 网易云 API | `127.0.0.1:18474` |
+| QQ 音乐 API | `127.0.0.1:18475` |
+| Flask Web | `HOST:PORT`，默认 `0.0.0.0:18473` |
 
-同一主机默认只运行一个完整实例。即使为 Web 配置不同端口，`run.py` 仍会固定启动 3000/3200；第二个实例会发生冲突。确需并行实例时，应使用独立主机/容器，或先完成 Node API 端口和启动策略的代码级隔离。
+同一主机默认只运行一个完整实例。默认端口为连续的 18473–18475；若并行运行多个实例，必须为每个实例配置独立的 `PORT`、`MUSIC_API_PORT`、`QQ_MUSIC_API_PORT` 及对应的 `*_BASE` 地址。
 
 ## 公共依赖
 
-- Python 3.8+。
+- Python 3.10+。
 - 系统 Node.js 20+ 与 npm。
 - FFmpeg 和 ffprobe。
 - KOOK Bot Token。
@@ -100,16 +102,20 @@ python3 run.py
 | `BOT_TOKEN` | KOOK Bot Token | 必填 |
 | `APP_VERSION` | `/版本信息` 展示的构建标识 | `desktop-ui-v2` |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | 媒体工具路径或 PATH 命令名 | 自动探测 |
-| `MUSIC_API_BASE` | 网易云 API 地址 | `http://localhost:3000` |
-| `QQ_MUSIC_API_BASE` | QQ 音乐 API 地址 | `http://localhost:3200` |
+| `MUSIC_API_PORT` | 网易云 API 监听端口 | `18474` |
+| `QQ_MUSIC_API_PORT` | QQ 音乐 API 监听端口 | `18475` |
 | `QQ_COOKIE_PATH` | QQ 兼容 Cookie | `./Cookie/qq_cookie.txt` |
 | `QQ_CREDENTIAL_PATH` | QQ 刷新元数据 | `./Cookie/qq_credential.json` |
 | `BILI_COOKIE_PATH` | Bilibili Cookie | `./Cookie/bili_cookie.txt` |
-| `ALLOWGROUP` / `ALLOWCHANNEL` / `ALLOWUSER` | Bot 普通命令白名单，逗号分隔 | 留空不限制该维度 |
-| `CMD_ALLOWUSER` | `/cmd` 独立用户白名单 | 留空即无人可用 |
+| `ALLOWGROUP` / `ALLOWCHANNEL` / `ALLOWUSER` | Bot 普通命令白名单，逗号分隔 | 全部留空时拒绝所有 Bot 指令 |
+| `BOT_ALLOW_UNRESTRICTED` | 无白名单时允许所有 KOOK 用户控制 Bot | `false` |
+| `MAX_REQUEST_BYTES` | Web 请求体上限（字节） | `1048576` |
+| `MAX_PLAYLIST_IMPORT_TRACKS` | 单次歌单导入曲目上限 | `1000` |
+| `MAX_QUEUE_TRACKS` | 单频道待播队列上限 | `2000` |
+| `MAX_PLAYLIST_IMPORT_CONCURRENCY` | 同时执行的 Web 歌单导入数 | `2` |
 | `SECRET_KEY` | Flask 密钥 | 必须为随机长字符串 |
 | `HOST` | Web 监听地址 | 生产建议 `127.0.0.1` |
-| `PORT` | Web 端口 | `5000` |
+| `PORT` | Web 端口 | `18473` |
 | `DEBUG` | Flask 调试 | 生产保持 `False` |
 
 Web 控制面鉴权：
@@ -158,12 +164,12 @@ role = admin
 must_change_password = 1
 ```
 
-初始明文密码不在 Git 文档中；项目所有者应从安全交付渠道获取。
+初始明文密码不写入 Git。可以通过 `INITIAL_ADMIN_PASSWORD` 注入部署 Secret；留空时，首次启动会在 `INITIAL_ADMIN_CREDENTIAL_PATH`（默认 `data/bootstrap-admin.json`）生成受限凭据文件。首次改密成功后该文件会自动删除。
 
 首次登录流程：
 
 1. 打开 `/login`；
-2. 使用 Bootstrap 凭据登录；
+2. 从部署 Secret 或受限凭据文件读取 Bootstrap 凭据并登录；
 3. 系统强制跳转 `/change-password`；
 4. 设置满足密码策略的新密码；
 5. 创建第二个管理员作为恢复路径；
@@ -212,7 +218,7 @@ data/kook_music.db
 3. QQ 的 `qq_cookie.txt` 与 `qq_credential.json` 作为同一账号状态迁移。
 4. SQLite 建议在实例停止后复制，避免遗漏 WAL 中尚未 checkpoint 的事务。
 5. 若必须在线备份，使用 SQLite 一致性备份机制，不只复制主 `.db`。
-6. 复制后限制文件权限。
+6. 复制后限制文件权限：Linux 建议目录 `0700`、敏感文件 `0600`；Windows 仅授予运行服务账号访问 ACL。
 7. 启动后检查登录、用户 Scope 和三个音乐平台状态。
 
 如果不迁移 `data/`，目标实例会失去现有 Web 用户与授权，并可能重新触发 Bootstrap 管理员初始化。
@@ -223,7 +229,7 @@ data/kook_music.db
 
 - 解析到项目外的系统 Node 20+；
 - 从 `npm root --global` 找到两个固定包；
-- 网易云 3000、QQ 3200 和 Flask 端口就绪；
+- 网易云 18474、QQ 18475 和 Flask 18473 端口就绪；
 - FFmpeg/ffprobe 可用；
 - Bot 进入运行状态；
 - `data/` 可写，SQLite 可初始化/打开。
@@ -231,15 +237,15 @@ data/kook_music.db
 本地 Node 探针：
 
 ```bash
-curl http://127.0.0.1:3000/login/status
-curl http://127.0.0.1:3200/getSearchByKey/test
+curl http://127.0.0.1:18474/login/status
+curl http://127.0.0.1:18475/getSearchByKey/test
 ```
 
 Web 鉴权探针：
 
 ```bash
-curl -i http://127.0.0.1:5000/login
-curl -i http://127.0.0.1:5000/api/system/status
+curl -i http://127.0.0.1:18473/login
+curl -i http://127.0.0.1:18473/api/system/status
 ```
 
 预期：
@@ -301,7 +307,7 @@ server {
     server_name music.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:5000;
+        proxy_pass http://127.0.0.1:18473;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -325,7 +331,7 @@ DEBUG=False
 AUTH_TRUST_PROXY_HEADERS=true
 ```
 
-不要直接暴露 3000/3200。完整边界见 [security.md](security.md)。
+不要直接暴露 18474/18475。完整边界见 [security.md](security.md)。
 
 ## 升级与回滚
 
@@ -344,4 +350,4 @@ AUTH_TRUST_PROXY_HEADERS=true
 
 ## 端口冲突
 
-启动前检查 3000、3200、5000。若端口由旧的本项目实例占用，先正常停止该实例；无法停止时只终止已确认属于该实例的 PID。不要按进程名批量结束系统上的所有 Node、Python 或 FFmpeg 进程。
+启动前检查 18473、18474、18475。若端口由旧的本项目实例占用，先正常停止该实例；无法停止时只终止已确认属于该实例的 PID。不要按进程名批量结束系统上的所有 Node、Python 或 FFmpeg 进程。

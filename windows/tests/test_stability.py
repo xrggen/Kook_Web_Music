@@ -122,6 +122,42 @@ class PlaybackStateTests(unittest.TestCase):
         live = kookvoice.get_state_snapshot("channel-3")
         self.assertEqual(live["play_list"][0]["extra"]["title"], "before")
 
+    def test_queue_metadata_is_bounded_and_drops_decoder_options(self):
+        player = kookvoice.Player("metadata-bounds", "token")
+        metadata = {
+            "title": "x" * 1000,
+            "extra_command": '-headers "Cookie: synthetic"',
+            "cookies": "synthetic-cookie",
+        }
+        metadata.update({f"field-{index}": index for index in range(40)})
+
+        player.add_music("https://example.invalid/song.mp3", metadata)
+        stored = kookvoice.get_state_snapshot("metadata-bounds")["play_list"][0]["extra"]
+
+        self.assertEqual(len(stored["title"]), 512)
+        self.assertNotIn("extra_command", stored)
+        self.assertNotIn("cookies", stored)
+        self.assertLessEqual(len(stored), 32)
+
+    def test_rtp_config_rejects_output_descriptor_injection(self):
+        valid = kookvoice._validated_rtp_config({
+            "ip": "203.0.113.10",
+            "port": 5004,
+            "rtcp_port": 5005,
+            "audio_ssrc": 1111,
+            "audio_pt": 111,
+            "bitrate": 128000,
+        })
+        self.assertEqual(valid["url"], "rtp://203.0.113.10:5004?rtcpport=5005")
+
+        with self.assertRaises(ValueError):
+            kookvoice._validated_rtp_config({
+                "ip": "203.0.113.10|[f=segment]file:///tmp/output",
+                "port": 5004,
+                "rtcp_port": 5005,
+                "bitrate": 128000,
+            })
+
     def test_single_and_playlist_repeat_are_mutually_exclusive(self):
         player = kookvoice.Player("repeat-modes", "token")
         player.add_music("https://example.invalid/song.mp3")
@@ -419,17 +455,44 @@ class PlaybackStateTests(unittest.TestCase):
             "https://example.invalid/audio.m4s",
             ss_value=12,
             is_bili=True,
-            extra_command='-headers "Cookie: test=1"',
         )
 
         self.assertNotIn("-timeout", command)
+        self.assertNotIn("-headers", command)
+        self.assertNotIn("-cookies", command)
         self.assertIn("-rw_timeout", command)
         timeout_index = command.index("-rw_timeout")
         self.assertEqual(command[timeout_index + 1], "60000000")
         self.assertEqual(command[command.index("-loglevel") + 1], "error")
-        self.assertLess(command.index("-headers"), command.index("-i"))
+        self.assertLess(command.index("-user_agent"), command.index("-i"))
         self.assertLess(command.index("-referer"), command.index("-i"))
         self.assertEqual(command[command.index("-ss") + 1], "12")
+
+        with self.assertRaises(ValueError):
+            kookvoice._build_decoder_command(
+                "https://example.invalid/audio.m4s",
+                ss_value="nan",
+            )
+
+        with self.assertRaises(TypeError):
+            kookvoice._build_decoder_command(
+                "https://example.invalid/audio.m4s",
+                extra_command='-headers "Cookie: test=1"',
+            )
+
+    def test_decoder_rejects_non_http_protocols_and_embedded_credentials(self):
+        invalid_sources = (
+            "file:///etc/passwd",
+            "concat:https://example.invalid/a|https://example.invalid/b",
+            "ftp://example.invalid/audio.mp3",
+            "https://user:password@example.invalid/audio.mp3",
+            " https://example.invalid/audio.mp3",
+            "https://example.invalid/audio.mp3\n",
+        )
+        for source in invalid_sources:
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError):
+                    kookvoice._build_decoder_command(source)
 
     def test_handler_reaps_subprocess_pipes_before_closing_thread_loop(self):
         handler = self.original_handler("subprocess-cleanup-test", "token")

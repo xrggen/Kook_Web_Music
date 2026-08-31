@@ -6,11 +6,15 @@ from typing import Dict, Any
 
 import requests
 
+try:
+    from .config import MUSIC_API_PORT
+    from .secure_storage import secure_write_text
+except ImportError:
+    from config import MUSIC_API_PORT
+    from secure_storage import secure_write_text
 
-API_BASE = os.environ.get(
-    "NETEASE_API_BASE",
-    "http://localhost:3000"
-)
+
+API_BASE = f"http://127.0.0.1:{MUSIC_API_PORT}"
 COOKIE_DIR = os.path.join(os.path.dirname(__file__), "Cookie")
 COOKIE_JSON_PATH = os.path.join(COOKIE_DIR, "cookies.json")
 COOKIE_TXT_PATH = os.path.join(COOKIE_DIR, "cookie.txt")
@@ -23,11 +27,12 @@ def ensure_cookie_dir():
 
 def save_cookies(cookies: Dict[str, Any]):
     ensure_cookie_dir()
-    with open(COOKIE_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(cookies, f, ensure_ascii=False, indent=2)
+    secure_write_text(
+        COOKIE_JSON_PATH,
+        json.dumps(cookies, ensure_ascii=False, indent=2),
+    )
     cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-    with open(COOKIE_TXT_PATH, "w", encoding="utf-8") as f:
-        f.write(cookie_str)
+    secure_write_text(COOKIE_TXT_PATH, cookie_str)
     print(f"已保存 Cookie 到: {COOKIE_JSON_PATH} 和 {COOKIE_TXT_PATH}")
 
 
@@ -37,18 +42,30 @@ def extract_resp_cookies(resp: requests.Response) -> Dict[str, str]:
 
 def captcha_send(phone: str, countrycode: str = "86") -> Dict[str, Any]:
     # NeteaseCloudMusicApi 规范参数名为 countrycode
-    url = f"{API_BASE}/captcha/sent?phone={phone}&countrycode={countrycode}&timestamp={int(time.time()*1000)}"
-    r = requests.get(url, timeout=10)
+    url = f"{API_BASE}/captcha/sent"
+    r = requests.get(
+        url,
+        params={"phone": phone, "countrycode": countrycode, "timestamp": int(time.time() * 1000)},
+        timeout=10,
+        allow_redirects=False,
+    )
     r.raise_for_status()
     return r.json()
 
 
 def captcha_verify(phone: str, code: str, countrycode: str = "86") -> Dict[str, Any]:
-    url = (
-        f"{API_BASE}/captcha/verify?phone={phone}&captcha={code}"
-        f"&countrycode={countrycode}&timestamp={int(time.time()*1000)}"
+    url = f"{API_BASE}/captcha/verify"
+    r = requests.get(
+        url,
+        params={
+            "phone": phone,
+            "captcha": code,
+            "countrycode": countrycode,
+            "timestamp": int(time.time() * 1000),
+        },
+        timeout=10,
+        allow_redirects=False,
     )
-    r = requests.get(url, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -64,7 +81,7 @@ def login_cellphone_with_captcha(phone: str, code: str, countrycode: str = "86")
         "rememberLogin": "true",
     }
     with requests.Session() as s:
-        resp = s.post(url, data=payload, timeout=20, allow_redirects=True)
+        resp = s.post(url, data=payload, timeout=20, allow_redirects=False)
         data: Dict[str, Any] = {}
         try:
             data = resp.json()
@@ -78,7 +95,7 @@ def login_cellphone_with_captcha(phone: str, code: str, countrycode: str = "86")
 
         # 再尝试 /login/status，部分实现会在此下发 Set-Cookie
         try:
-            st = s.get(f"{API_BASE}/login/status", timeout=10)
+            st = s.get(f"{API_BASE}/login/status", timeout=10, allow_redirects=False)
             st.raise_for_status()
             if s.cookies:
                 cookies.update({k: v for k, v in s.cookies.items()})
@@ -101,11 +118,11 @@ def main():
         sent = captcha_send(phone, ct)
         code = sent.get("code")
         if code not in (200,):
-            print(f"发送验证码失败: {sent}")
+            print(f"发送验证码失败，返回码: {code}")
             sys.exit(2)
         print("验证码已发送，请查收短信...")
     except Exception as e:
-        print(f"发送验证码异常: {e}")
+        print(f"发送验证码异常: {type(e).__name__}")
         sys.exit(2)
 
     sms = input("请输入短信验证码: ").strip()
@@ -117,12 +134,12 @@ def main():
         verify = captcha_verify(phone, sms, ct)
         vcode = verify.get("code")
         if vcode not in (200,):
-            print(f"验证码校验失败: {verify}")
+            print(f"验证码校验失败，返回码: {vcode}")
             # 仍尝试直接登录，以应对部分实现不返回 200
         else:
             print("验证码校验成功，正在登录...")
     except Exception as e:
-        print(f"验证码校验异常: {e}，尝试继续登录...")
+        print(f"验证码校验异常: {type(e).__name__}，尝试继续登录...")
 
     try:
         result = login_cellphone_with_captcha(phone, sms, ct)
@@ -132,16 +149,16 @@ def main():
         if status and status >= 400:
             print(f"登录HTTP状态: {status}")
         if not cookies:
-            print(f"登录返回但未获取到 Cookie，请检查服务端: {data}")
+            print("登录返回但未获取到 Cookie，请检查本机 Node API 日志。")
             sys.exit(4)
         save_cookies(cookies)
         code = data.get("code")
         if code in (200, 803):
             print("登录成功！")
         else:
-            print(f"登录完成，返回码: {code}，详情: {json.dumps(data, ensure_ascii=False)[:800]}")
+            print(f"登录完成，返回码: {code}")
     except Exception as e:
-        print(f"登录异常: {e}")
+        print(f"登录异常: {type(e).__name__}")
         sys.exit(5)
 
 

@@ -1,3 +1,17 @@
+function biliSafeImageUrl(value) {
+    try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function biliSafeQrImage(value) {
+    const text = String(value || '');
+    return text.length <= 1400000 && /^data:image\/png;base64,[A-Za-z0-9+/=\s]+$/.test(text) ? text : '';
+}
+
 class BiliAccountManager {
     constructor() {
         this.qrData = {};
@@ -60,7 +74,8 @@ class BiliAccountManager {
             const data = await resp.json();
             if (data.code === 200) {
                 if (data.face) {
-                    $('#bili-profile-avatar').attr('src', data.face).show();
+                    const avatar = biliSafeImageUrl(data.face);
+                    if (avatar) $('#bili-profile-avatar').attr('src', avatar).show();
                 }
                 $('#bili-profile-nickname').text(data.uname || 'B站用户');
                 $('#bili-uid-display').text(data.uid || '');
@@ -82,22 +97,29 @@ class BiliAccountManager {
                     $('#bili-playlist-grid').html('<div class="col-12 text-center text-muted py-4">暂无收藏夹</div>');
                     return;
                 }
-                let html = '';
+                const grid = $('#bili-playlist-grid').empty();
                 list.forEach(pl => {
-                    const name = pl.name || '未知收藏夹';
-                    html += `<div class="col-md-4 col-lg-3">
-                        <div class="card h-100" style="cursor:pointer"
-                             onclick="window.open('https://www.bilibili.com/medialist/play/ml${pl.id}','_blank')">
-                            <img src="${pl.cover || ''}" class="card-img-top" alt="${name}"
-                                 onerror="this.style.display='none'">
-                            <div class="card-body p-2">
-                                <div class="fw-bold small text-truncate" title="${name}">${name}</div>
-                                <div class="text-muted" style="font-size:.75rem">${pl.trackCount||0}个视频</div>
-                            </div>
-                        </div>
-                    </div>`;
+                    const name = String(pl.name || '未知收藏夹');
+                    const targetUrl = `https://www.bilibili.com/medialist/play/ml${encodeURIComponent(String(pl.id || ''))}`;
+                    const card = $('<div>', { class: 'card h-100', role: 'link', tabindex: 0 })
+                        .css('cursor', 'pointer')
+                        .on('click keydown', event => {
+                            if (event.type === 'click' || event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                            }
+                        });
+                    const cover = biliSafeImageUrl(pl.cover);
+                    if (cover) {
+                        card.append($('<img>', { class: 'card-img-top', alt: name }).attr('src', cover).on('error', function() { $(this).hide(); }));
+                    }
+                    card.append(
+                        $('<div>', { class: 'card-body p-2' })
+                            .append($('<div>', { class: 'fw-bold small text-truncate', title: name }).text(name))
+                            .append($('<div>', { class: 'text-muted' }).css('font-size', '.75rem').text(`${Number(pl.trackCount) || 0}个视频`))
+                    );
+                    grid.append($('<div>', { class: 'col-md-4 col-lg-3' }).append(card));
                 });
-                $('#bili-playlist-grid').html(html);
             }
         } catch (e) {
             console.error('B站收藏夹加载失败:', e);
@@ -114,9 +136,10 @@ class BiliAccountManager {
         try {
             const resp = await fetch('/api/bili/account/qr/create', { method: 'POST' });
             const data = await resp.json();
-            if (data.qrcode) {
+            const qrImage = biliSafeQrImage(data.qrcode);
+            if (qrImage) {
                 // 服务端已生成 base64 PNG 二维码图片，直接使用
-                $('#bili-qr-image').attr('src', data.qrcode).show();
+                $('#bili-qr-image').attr('src', qrImage).show();
                 $('#bili-qr-loading').hide();
                 this.qrData = { qrcode_key: data.qrcode_key };
                 this.qrStartTime = Date.now();
@@ -192,7 +215,7 @@ class BiliAccountManager {
                 this.showToast('B站Cookie已保存', 'success');
                 this.checkLoginStatus();
             } else {
-                $('#bili-cookie-save-msg').html('<span class="text-danger">' + (data.error || '保存失败') + '</span>');
+                $('#bili-cookie-save-msg').empty().append($('<span>', { class: 'text-danger' }).text(data.error || '保存失败'));
             }
         } catch (e) {
             $('#bili-cookie-save-msg').html('<span class="text-danger">网络异常</span>');

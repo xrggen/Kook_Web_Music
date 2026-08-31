@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -162,12 +163,56 @@ class WatchdogPathTests(unittest.TestCase):
         self.assertIsNone(run._watchdog)
 
     def test_debug_endpoint_uses_runtime_health_snapshot(self):
-        response = windows_app.app.test_client().get("/api/debug")
-        payload = response.get_json()
-        self.assertEqual(200, response.status_code)
-        self.assertEqual("success", payload["status"])
-        self.assertIn("bot_state", payload)
-        self.assertIn("kook_gateway_heartbeat_age", payload)
+        self.assertFalse(hasattr(windows_app, "app"))
+        with tempfile.TemporaryDirectory() as tempdir:
+            database = str(Path(tempdir) / "auth.db")
+            credential = str(Path(tempdir) / "bootstrap-admin.json")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "AUTH_DATABASE_PATH": database,
+                    "INITIAL_ADMIN_CREDENTIAL_PATH": credential,
+                },
+            ):
+                application = windows_app.create_app(start_bot=False)
+                client = application.test_client()
+                self.assertEqual(200, client.get("/healthz").status_code)
+                self.assertEqual(401, client.get("/api/debug").status_code)
+                with application.test_request_context("/api/debug"):
+                    response = windows_app.debug()
+                    payload = response.get_json()
+                    self.assertEqual("success", payload["status"])
+                    self.assertIn("bot_state", payload)
+                    self.assertIn("kook_gateway_heartbeat_age", payload)
+
+    def test_all_api_routes_are_guarded_and_health_has_security_headers(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            database = str(Path(tempdir) / "auth.db")
+            credential = str(Path(tempdir) / "bootstrap-admin.json")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "AUTH_DATABASE_PATH": database,
+                    "INITIAL_ADMIN_CREDENTIAL_PATH": credential,
+                },
+            ):
+                application = windows_app.create_app(start_bot=False)
+                client = application.test_client()
+
+                health = client.get("/healthz")
+                self.assertEqual(200, health.status_code)
+                self.assertIn("no-store", health.headers.get("Cache-Control", ""))
+                self.assertIn("default-src 'self'", health.headers.get("Content-Security-Policy", ""))
+
+                for rule in application.url_map.iter_rules():
+                    if not rule.rule.startswith("/api/"):
+                        continue
+                    methods = rule.methods - {"HEAD", "OPTIONS"}
+                    method = "GET" if "GET" in methods else sorted(methods)[0]
+                    with self.subTest(route=rule.rule, method=method):
+                        response = client.open(rule.rule, method=method, json={})
+                        self.assertEqual(401, response.status_code)
+                        self.assertIn("no-store", response.headers.get("Cache-Control", ""))
 
     def test_dependency_repair_requires_two_consecutive_failures(self):
         counters = {}

@@ -1,6 +1,23 @@
 /**
  * 网易云账号管理页面 JS
  */
+function accountSafeImageUrl(value) {
+    try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function accountSafeQrImage(value) {
+    const text = String(value || '');
+    if (text.length > 1400000) return '';
+    if (/^data:image\/png;base64,[A-Za-z0-9+/=\s]+$/.test(text)) return text;
+    if (/^[A-Za-z0-9+/=\s]+$/.test(text)) return `data:image/png;base64,${text}`;
+    return '';
+}
+
 class AccountManager {
     constructor() {
         this.qrKey = null;
@@ -103,22 +120,13 @@ class AccountManager {
             });
             const qrData = await qrResp.json();
             if (qrData.data && qrData.data.qrimg) {
-                const img = qrData.data.qrimg;
-                if (img.startsWith('data:image')) {
-                    $('#qr-image').attr('src', img);
-                } else {
-                    $('#qr-image').attr('src', 'data:image/png;base64,' + img);
-                }
+                const img = accountSafeQrImage(qrData.data.qrimg);
+                if (!img) throw new Error('二维码图片格式无效');
+                $('#qr-image').attr('src', img);
                 $('#qr-loading').hide();
                 $('#qr-image').show();
                 $('#qr-status').text('请使用网易云音乐App扫描二维码').removeClass('text-success text-danger');
                 // 开始轮询
-                this.startQRPolling();
-            } else if (qrData.data && qrData.data.qrurl) {
-                // 返回的是链接，用qrcode生成
-                $('#qr-image').attr('src', 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=' + encodeURIComponent(qrData.data.qrurl));
-                $('#qr-loading').hide();
-                $('#qr-image').show();
                 this.startQRPolling();
             } else {
                 throw new Error('未获取到二维码');
@@ -160,11 +168,6 @@ class AccountManager {
                 // 登录成功
                 this.stopQRPolling();
                 $('#qr-status').text('登录成功！').addClass('text-success').removeClass('text-warning text-danger');
-                // 保存cookie
-                const cookieStr = data.cookie;
-                if (cookieStr) {
-                    await this.persistCookie(cookieStr);
-                }
                 this.showToast('登录成功！', 'success');
                 setTimeout(() => this.checkLoginStatus(), 1000);
             } else if (code === 800) {
@@ -207,7 +210,7 @@ class AccountManager {
                     }
                 }, 1000);
             } else {
-                $('#phone-login-msg').html('<span class="text-danger">发送失败: ' + (data.message || data.msg || '未知错误') + '</span>');
+                $('#phone-login-msg').empty().append($('<span>', { class: 'text-danger' }).text('发送失败: ' + (data.message || data.msg || '未知错误')));
                 $('#send-captcha-btn').prop('disabled', false).text('发送验证码');
             }
         } catch (e) {
@@ -236,7 +239,7 @@ class AccountManager {
                 this.showToast('登录成功！', 'success');
                 setTimeout(() => this.checkLoginStatus(), 1000);
             } else {
-                $('#phone-login-msg').html('<span class="text-danger">登录失败: ' + (data.message || data.msg || '未知错误') + '</span>');
+                $('#phone-login-msg').empty().append($('<span>', { class: 'text-danger' }).text('登录失败: ' + (data.message || data.msg || '未知错误')));
             }
         } catch (e) {
             $('#phone-login-msg').html('<span class="text-danger">网络错误</span>');
@@ -269,18 +272,6 @@ class AccountManager {
         }
     }
 
-    async persistCookie(cookieStr) {
-        try {
-            await fetch('/api/account/cookie', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cookie: cookieStr })
-            });
-        } catch (e) {
-            console.error('保存Cookie失败:', e);
-        }
-    }
-
     // ========== 账号信息 ==========
     async loadAccountInfo() {
         if (!this.accountData) return;
@@ -289,7 +280,7 @@ class AccountManager {
 
         // 头像
         const avatarUrl = profile.avatarUrl || '';
-        $('#profile-avatar').attr('src', avatarUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><circle cx="48" cy="48" r="48" fill="%23ddd"/></svg>');
+        $('#profile-avatar').attr('src', accountSafeImageUrl(avatarUrl) || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><circle cx="48" cy="48" r="48" fill="%23ddd"/></svg>');
 
         // 昵称
         $('#profile-nickname').text(profile.nickname || '未知用户');
@@ -373,28 +364,34 @@ class AccountManager {
                     $('#playlist-grid').html('<div class="col-12 text-center text-muted py-4">暂无歌单</div>');
                     return;
                 }
-                let html = '';
+                const grid = $('#playlist-grid').empty();
+                const placeholder = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 200%22><rect fill=%22%23eee%22 width=%22200%22 height=%22200%22/></svg>';
                 playlists.forEach(pl => {
-                    const cover = pl.coverImgUrl || '';
-                    const name = pl.name || '未知歌单';
-                    const trackCount = pl.trackCount || 0;
-                    const playCount = (pl.playCount || 0).toLocaleString();
-                    const creator = pl.creator?.nickname || '';
-                    html += `
-                        <div class="col-md-4 col-lg-3">
-                            <div class="card h-100 playlist-card" style="cursor: pointer;"
-                                 onclick="window.open('https://music.163.com/#/playlist?id=${pl.id}', '_blank')">
-                                <img src="${cover}" class="card-img-top" alt="${name}"
-                                     onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 200%22><rect fill=%22%23eee%22 width=%22200%22 height=%22200%22/></svg>'">
-                                <div class="card-body p-2">
-                                    <div class="fw-bold small text-truncate" title="${name}">${name}</div>
-                                    <div class="text-muted" style="font-size: 0.75rem;">${trackCount}首 · ${playCount}次播放</div>
-                                    ${creator ? `<div class="text-muted" style="font-size: 0.7rem;">by ${creator}</div>` : ''}
-                                </div>
-                            </div>
-                        </div>`;
+                    const name = String(pl.name || '未知歌单');
+                    const trackCount = Number(pl.trackCount) || 0;
+                    const playCount = (Number(pl.playCount) || 0).toLocaleString();
+                    const creator = String(pl.creator?.nickname || '');
+                    const targetUrl = `https://music.163.com/#/playlist?id=${encodeURIComponent(String(pl.id || ''))}`;
+                    const card = $('<div>', { class: 'card h-100 playlist-card', role: 'link', tabindex: 0 })
+                        .css('cursor', 'pointer')
+                        .on('click keydown', event => {
+                            if (event.type === 'click' || event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                            }
+                        });
+                    const image = $('<img>', { class: 'card-img-top', alt: name })
+                        .attr('src', accountSafeImageUrl(pl.coverImgUrl) || placeholder)
+                        .on('error', function() { $(this).attr('src', placeholder); });
+                    const body = $('<div>', { class: 'card-body p-2' })
+                        .append($('<div>', { class: 'fw-bold small text-truncate', title: name }).text(name))
+                        .append($('<div>', { class: 'text-muted' }).css('font-size', '0.75rem').text(`${trackCount}首 · ${playCount}次播放`));
+                    if (creator) {
+                        body.append($('<div>', { class: 'text-muted' }).css('font-size', '0.7rem').text(`by ${creator}`));
+                    }
+                    card.append(image, body);
+                    grid.append($('<div>', { class: 'col-md-4 col-lg-3' }).append(card));
                 });
-                $('#playlist-grid').html(html);
             } else {
                 $('#playlist-grid').html('<div class="col-12 text-center text-muted py-4">获取歌单失败</div>');
             }
@@ -425,22 +422,17 @@ class AccountManager {
             const d0 = await resp0.json();
             const d1 = await resp1.json();
 
-            let resultHtml = '';
-            // android 签到
-            if (d0.code === 200) {
-                resultHtml += `<p><i class="bi bi-phone"></i> Android: <span class="text-success">+${d0.point || 3} 经验</span></p>`;
-            } else {
-                resultHtml += `<p><i class="bi bi-phone"></i> Android: <span class="text-muted">${d0.msg || d0.message || '已签到'}</span></p>`;
-            }
-            // web 签到
-            if (d1.code === 200) {
-                resultHtml += `<p><i class="bi bi-laptop"></i> Web: <span class="text-success">+${d1.point || 2} 经验</span></p>`;
-            } else {
-                resultHtml += `<p><i class="bi bi-laptop"></i> Web: <span class="text-muted">${d1.msg || d1.message || '已签到'}</span></p>`;
-            }
-
+            const resultBody = $('#signin-result-body').empty();
+            const appendResult = (icon, label, success, value) => {
+                const row = $('<p>')
+                    .append($('<i>', { class: `bi ${icon}` }))
+                    .append(document.createTextNode(` ${label}: `))
+                    .append($('<span>', { class: success ? 'text-success' : 'text-muted' }).text(String(value)));
+                resultBody.append(row);
+            };
+            appendResult('bi-phone', 'Android', d0.code === 200, d0.code === 200 ? `+${d0.point || 3} 经验` : (d0.msg || d0.message || '已签到'));
+            appendResult('bi-laptop', 'Web', d1.code === 200, d1.code === 200 ? `+${d1.point || 2} 经验` : (d1.msg || d1.message || '已签到'));
             $('#signin-result-card').show();
-            $('#signin-result-body').html(resultHtml);
             this.showToast('签到完成', 'success');
         } catch (e) {
             this.showToast('签到失败', 'error');

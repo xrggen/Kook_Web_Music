@@ -1,11 +1,14 @@
 import asyncio
 import copy
+import ipaddress
+import math
 import os
-import shlex
 import shutil
 import threading
 import time
 import logging
+import hashlib
+from urllib.parse import urlsplit
 from enum import Enum, unique
 from typing import Dict, Union, List, Any, Optional, Coroutine as CoroutineType
 from asyncio import AbstractEventLoop
@@ -21,9 +24,32 @@ try:
 except ImportError:
     from requestor import VoiceRequestor
 
+try:
+    from ..config import MAX_QUEUE_TRACKS
+except (ImportError, ValueError):
+    try:
+        from config import MAX_QUEUE_TRACKS
+    except ImportError:
+        MAX_QUEUE_TRACKS = 2000
+
 # 配置日志
 logger = logging.getLogger(__name__)
 log_enabled = False
+
+
+def _safe_log_text(value, limit=160):
+    return str(value or '').replace('\r', ' ').replace('\n', ' ')[:limit]
+
+
+def _media_log_ref(value):
+    text = str(value or '')
+    digest = hashlib.sha256(text.encode('utf-8', errors='replace')).hexdigest()[:12]
+    if text.startswith(('http://', 'https://')):
+        host = urlsplit(text).hostname or 'unknown-host'
+        return f'url:{host}#{digest}'
+    if '_PLAYLIST_SONG:' in text or text.startswith('PLAYLIST_SONG:'):
+        return f'playlist-marker#{digest}'
+    return f'file:{os.path.basename(text)[:80]}#{digest}'
 
 def configure_logging(enabled: bool = True):
     global log_enabled
@@ -48,8 +74,174 @@ def set_loop(loop):
     original_loop = loop
 
 
-def _build_decoder_command(file, ss_value=0, is_bili=False, extra_command=''):
+_PLAYLIST_MARKERS = (
+    'PLAYLIST_SONG:',
+    'QQ_PLAYLIST_SONG:',
+    'BILI_PLAYLIST_SONG:',
+)
+_MAX_MEDIA_SOURCE_LENGTH = 8192
+_MAX_METADATA_FIELDS = 32
+_MAX_METADATA_KEY_LENGTH = 64
+_MAX_METADATA_TEXT_LENGTH = 512
+_BLOCKED_METADATA_FIELDS = {
+    'extra_command',
+    'header',
+    'headers',
+    'cookie',
+    'cookies',
+    'user_agent',
+    'referer',
+}
+_BLOCKED_MEDIA_HOSTNAMES = frozenset({
+    'localhost',
+    'localhost.localdomain',
+    'metadata.google.internal',
+    'metadata.google',
+})
+_BLOCKED_MEDIA_HOST_SUFFIXES = (
+    '.localhost',
+    '.local',
+    '.internal',
+    '.home.arpa',
+)
+
+
+def _validate_media_host(parsed):
+    """拒绝明显指向本机、内网或保留地址的媒体主机。"""
+    try:
+        hostname = (parsed.hostname or '').rstrip('.').lower()
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError('媒体 URL 主机或端口无效') from exc
+    if (
+        not hostname
+        or len(hostname) > 253
+        or hostname in _BLOCKED_MEDIA_HOSTNAMES
+        or hostname.endswith(_BLOCKED_MEDIA_HOST_SUFFIXES)
+    ):
+        raise ValueError('媒体 URL 不允许访问本机或内网主机')
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError('媒体 URL 端口无效')
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise ValueError('媒体 URL 不允许访问本机或保留 IP 地址')
+    return hostname
+
+
+def _validate_media_source(value, allow_playlist_marker=False):
+    """只允许受控歌单标记、现存本地文件或 HTTP(S) 媒体 URL。"""
+    if not isinstance(value, str):
+        raise ValueError('媒体源必须是字符串')
+    if not value or value != value.strip():
+        raise ValueError('媒体源为空或包含首尾空白')
+    if len(value) > _MAX_MEDIA_SOURCE_LENGTH:
+        raise ValueError('媒体源过长')
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError('媒体源包含控制字符')
+
+    if value.startswith(_PLAYLIST_MARKERS):
+        if allow_playlist_marker and value.partition(':')[2]:
+            return value
+        raise ValueError('未解析的歌单标记不能直接播放')
+
+    if os.path.isfile(value):
+        return value
+
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {'http', 'https'} or not parsed.hostname:
+        raise ValueError('媒体源仅支持现存本地文件或 HTTP(S) URL')
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError('媒体 URL 不允许内嵌凭据')
+    _validate_media_host(parsed)
+    return value
+
+
+def _sanitize_track_metadata(extra_data):
+    """限制队列元数据大小，并丢弃历史上的 FFmpeg 输入选项字段。"""
+    if extra_data is None:
+        return {}
+    if not isinstance(extra_data, dict):
+        raise ValueError('歌曲元数据必须是对象')
+    clean = {}
+    for raw_key, value in extra_data.items():
+        if len(clean) >= _MAX_METADATA_FIELDS:
+            break
+        key = str(raw_key).strip()
+        if (
+            not key
+            or len(key) > _MAX_METADATA_KEY_LENGTH
+            or key.lower() in _BLOCKED_METADATA_FIELDS
+            or any(ord(char) < 32 or ord(char) == 127 for char in key)
+        ):
+            continue
+        if key.lower() == 'duration':
+            try:
+                duration = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(duration) and 0 <= duration <= 604800:
+                clean[key] = duration
+            continue
+        if isinstance(value, str):
+            clean[key] = value.replace('\r', ' ').replace('\n', ' ').replace('\0', '')[
+                :_MAX_METADATA_TEXT_LENGTH
+            ]
+        elif isinstance(value, bool):
+            clean[key] = value
+        elif isinstance(value, int):
+            clean[key] = max(-1_000_000_000_000, min(value, 1_000_000_000_000))
+        elif isinstance(value, float) and math.isfinite(value):
+            clean[key] = max(-1_000_000_000_000.0, min(value, 1_000_000_000_000.0))
+    return clean
+
+
+def _validated_rtp_config(value):
+    """把 KOOK 语音响应收敛为可安全传给 FFmpeg 的 RTP 参数。"""
+    if not isinstance(value, dict):
+        raise ValueError('KOOK语音响应格式错误')
+
+    try:
+        address = ipaddress.ip_address(str(value.get('ip', '')).strip())
+        port = int(value.get('port'))
+        rtcp_port = int(value.get('rtcp_port'))
+        audio_ssrc = int(value.get('audio_ssrc', 1111))
+        audio_pt = int(value.get('audio_pt', 111))
+        bitrate = int(value.get('bitrate'))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError('KOOK语音响应包含无效RTP参数') from exc
+
+    if not 1 <= port <= 65535 or not 1 <= rtcp_port <= 65535:
+        raise ValueError('KOOK语音响应包含无效RTP端口')
+    if not 1 <= audio_ssrc <= 0xFFFFFFFF or not 0 <= audio_pt <= 127:
+        raise ValueError('KOOK语音响应包含无效音频参数')
+    if not 6000 <= bitrate <= 1_000_000:
+        raise ValueError('KOOK语音响应包含无效码率')
+
+    host = f'[{address.compressed}]' if address.version == 6 else address.compressed
+    return {
+        'host': host,
+        'port': port,
+        'rtcp_port': rtcp_port,
+        'audio_ssrc': audio_ssrc,
+        'audio_pt': audio_pt,
+        'bitrate': bitrate,
+        'url': f'rtp://{host}:{port}?rtcpport={rtcp_port}',
+    }
+
+
+def _build_decoder_command(file, ss_value=0, is_bili=False):
     """构造兼容当前 FFmpeg 的网络音频解码参数。"""
+    file = _validate_media_source(file)
+    try:
+        seek_seconds = float(ss_value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError('播放起始位置无效') from exc
+    if not math.isfinite(seek_seconds) or not 0 <= seek_seconds <= 604800:
+        raise ValueError('播放起始位置超出范围')
+    seek_text = str(int(seek_seconds)) if seek_seconds.is_integer() else f'{seek_seconds:.3f}'.rstrip('0').rstrip('.')
     timeout_us = 60000000 if is_bili else 30000000
     command = [
         ffmpeg_bin,
@@ -66,11 +258,8 @@ def _build_decoder_command(file, ss_value=0, is_bili=False, extra_command=''):
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '-referer', 'https://www.bilibili.com/',
         ])
-    if extra_command:
-        # headers/cookies/user_agent/referer 都是输入选项，必须位于 -i 之前。
-        command.extend(shlex.split(extra_command))
     command.extend([
-        '-ss', str(ss_value),
+        '-ss', seek_text,
         '-i', str(file),
         '-filter:a', 'volume=0.4',
         '-acodec', 'pcm_s16le',
@@ -478,11 +667,8 @@ class Player:
             raise ValueError('频道id不能为空')
         if not self.token:
             raise ValueError('第一次启动推流时，你需要指定机器人token')
-        # 检查是否是歌单歌曲标记，如果是则跳过文件存在检查
-        if not music.startswith("PLAYLIST_SONG:") and not music.startswith("QQ_PLAYLIST_SONG:") and not music.startswith("BILI_PLAYLIST_SONG:"):
-            if 'http' not in music:
-                if not os.path.exists(music):
-                    raise ValueError('文件不存在')
+        music = _validate_media_source(music, allow_playlist_marker=True)
+        extra_data = _sanitize_track_metadata(extra_data)
 
         _wait_for_stopping_channel(self.channel_id)
         with state_lock:
@@ -492,18 +678,20 @@ class Player:
                 play_list[self.channel_id] = state
             elif guild_id:
                 state['guild_id'] = str(guild_id)
+            if len(state['play_list']) >= MAX_QUEUE_TRACKS:
+                raise ValueError(f'播放队列已达到上限（{MAX_QUEUE_TRACKS} 首）')
             state['voice_channel'] = self.channel_id
             state['_stopping'] = False
             state['play_list'].append({
                 'file': music,
                 'ss': 0,
-                'extra': extra_data or {},
+                'extra': extra_data,
             })
             if guild_status.get(self.channel_id) == Status.WAIT:
                 guild_status[self.channel_id] = Status.END
             _start_handler_locked(self.channel_id, self.token)
         if log_enabled:
-            logger.info(f'添加音乐到播放列表，频道: {self.channel_id}，音乐: {music}')
+            logger.info(f'添加音乐到播放列表，频道: {self.channel_id}')
 
     def stop(self):
         with state_lock:
@@ -619,17 +807,23 @@ class Player:
         跳转至歌曲指定位置
             :param music_seconds int: 所要跳转到歌曲的秒数
         '''
+        try:
+            seconds = int(music_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('跳转位置无效') from exc
+        if seconds < 0 or seconds > 604800:
+            raise ValueError('跳转位置超出范围')
         with state_lock:
             if self.channel_id not in play_list:
                 raise ValueError('该频道没有正在播放的歌曲')
             if play_list[self.channel_id]['now_playing']:
                 now_play = play_list[self.channel_id]['now_playing'].copy()
-                now_play['ss'] = int(music_seconds)
+                now_play['ss'] = seconds
                 now_play.pop('start', None)
                 play_list[self.channel_id]['play_list'].insert(0, now_play)
                 guild_status[self.channel_id] = Status.SKIP
                 if log_enabled:
-                    logger.info(f'跳转至 {music_seconds} 秒，频道: {self.channel_id}')
+                    logger.info(f'跳转至 {seconds} 秒，频道: {self.channel_id}')
 
 
 # 事件处理部分
@@ -921,7 +1115,7 @@ class PlayHandler(threading.Thread):
                     logger.error(
                         '播放任务提前结束，频道=%s: %s',
                         self.channel_id,
-                        error,
+                        type(error).__name__,
                     )
         finally:
             for task in (task1, task2):
@@ -1020,22 +1214,26 @@ class PlayHandler(threading.Thread):
                         if log_enabled:
                             logger.error(
                                 '加入频道失败: 首次=%s, 重试=%s',
-                                first_error,
-                                retry_error,
+                                type(first_error).__name__,
+                                type(retry_error).__name__,
                             )
-                        raise RuntimeError(f'加入频道失败 {retry_error}')
+                        raise RuntimeError('加入频道失败') from retry_error
 
-                rtp_url = f"rtp://{res['ip']}:{res['port']}?rtcpport={res['rtcp_port']}"
+                rtp = _validated_rtp_config(res)
+                rtp_url = rtp['url']
                 if log_enabled:
-                    try:
-                        logger.info(f"RTP配置: {res}")
-                    except Exception:
-                        pass
+                    logger.info(
+                        'RTP配置: host=%s port=%d rtcp_port=%d bitrate=%d',
+                        rtp['host'],
+                        rtp['port'],
+                        rtp['rtcp_port'],
+                        rtp['bitrate'],
+                    )
 
-                audio_ssrc = res.get('audio_ssrc', 1111)
-                audio_pt = res.get('audio_pt', 111)
+                audio_ssrc = rtp['audio_ssrc']
+                audio_pt = rtp['audio_pt']
 
-                bitrate = int(res['bitrate'] / 1000)
+                bitrate = int(rtp['bitrate'] / 1000)
                 bitrate *= 0.9 if bitrate > 100 else 1
 
                 while True:
@@ -1066,7 +1264,7 @@ class PlayHandler(threading.Thread):
                     f'[select=a:f=rtp:ssrc={audio_ssrc}:payload_type={audio_pt}]{rtp_url}',
                 ]
                 if log_enabled:
-                    logger.info('运行 ffmpeg 命令: %s', ' '.join(map(str, encoder_args)))
+                    logger.info('启动 ffmpeg 编码器，参数数量=%d', len(encoder_args))
                 p = self._track_subprocess(
                     await asyncio.create_subprocess_exec(
                         *encoder_args,
@@ -1113,13 +1311,13 @@ class PlayHandler(threading.Thread):
                                     resolved = resolve_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
-                                        logger.info(f'[歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.info('[歌单URL] 已解析: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                     else:
-                                        logger.warning(f'[歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.warning('[歌单URL] 解析失败，跳过: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                         _discard_current_item(self.channel_id, self)
                                         continue
                                 except Exception as e:
-                                    logger.error(f'[歌单URL] 解析异常: {e}')
+                                    logger.error('[歌单URL] 解析异常: %s', type(e).__name__)
                                     _discard_current_item(self.channel_id, self)
                                     continue
                             elif file.startswith("QQ_PLAYLIST_SONG:"):
@@ -1131,13 +1329,13 @@ class PlayHandler(threading.Thread):
                                     resolved = resolve_qq_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
-                                        logger.info(f'[QQ歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.info('[QQ歌单URL] 已解析: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                     else:
-                                        logger.warning(f'[QQ歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.warning('[QQ歌单URL] 解析失败，跳过: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                         _discard_current_item(self.channel_id, self)
                                         continue
                                 except Exception as e:
-                                    logger.error(f'[QQ歌单URL] 解析异常: {e}')
+                                    logger.error('[QQ歌单URL] 解析异常: %s', type(e).__name__)
                                     _discard_current_item(self.channel_id, self)
                                     continue
                             elif file.startswith("BILI_PLAYLIST_SONG:"):
@@ -1149,33 +1347,25 @@ class PlayHandler(threading.Thread):
                                     resolved = resolve_bili_marker_batch([file], 1)
                                     if file in resolved:
                                         file = resolved[file]
-                                        logger.info(f'[Bili歌单URL] 已解析: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.info('[Bili歌单URL] 已解析: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                     else:
-                                        logger.warning(f'[Bili歌单URL] 解析失败，跳过: {music_info.get("extra", {}).get("音乐名字", file)}')
+                                        logger.warning('[Bili歌单URL] 解析失败，跳过: %s', _safe_log_text(music_info.get("extra", {}).get("音乐名字", "未命名歌曲")))
                                         _discard_current_item(self.channel_id, self)
                                         continue
                                 except Exception as e:
-                                    logger.error(f'[Bili歌单URL] 解析异常: {e}')
+                                    logger.error('[Bili歌单URL] 解析异常: %s', type(e).__name__)
                                     _discard_current_item(self.channel_id, self)
                                     continue
 
+                            try:
+                                file = _validate_media_source(file)
+                            except ValueError:
+                                logger.warning('媒体源校验失败，已跳过当前歌曲')
+                                _discard_current_item(self.channel_id, self)
+                                continue
+
                             if self.should_stop():
                                 return
-                            extra_command = ''
-                            if 'extra' in music_info and music_info['extra']:
-                                extra_data = music_info['extra']
-                                extra_command = extra_data.get('extra_command', '')
-
-                                def pack_command(full_command, name, value):
-                                    if value:
-                                        full_command += f' -{name} "{value}"'
-                                    return full_command
-
-                                if isinstance(extra_data, dict):
-                                    extra_command = pack_command(extra_command, 'headers', extra_data.get('header'))
-                                    extra_command = pack_command(extra_command, 'cookies', extra_data.get('cookies'))
-                                    extra_command = pack_command(extra_command, 'user_agent', extra_data.get('user_agent'))
-                                    extra_command = pack_command(extra_command, 'referer', extra_data.get('referer'))
 
                             ss_value = music_info.get('ss', 0)
 
@@ -1191,7 +1381,7 @@ class PlayHandler(threading.Thread):
                                     logger.info(f'使用API已知时长: {audio_duration:.2f}秒（跳过探测）')
                             else:
                                 if log_enabled:
-                                    logger.info(f'获取音频时长: {file}')
+                                    logger.info('获取音频时长: %s', _media_log_ref(file))
                                 try:
                                     try:
                                         from ..config import FFPROBE_PATH as _ffprobe_path
@@ -1248,10 +1438,10 @@ class PlayHandler(threading.Thread):
                                     if audio_duration <= 0:
                                         if log_enabled:
                                             logger.info(f'使用备用方法获取时长')
-                                        backup_args = [ffmpeg_bin, '-i', file]
-                                        if extra_command:
-                                            backup_args.extend(shlex.split(extra_command))
-                                        backup_args.extend(['-f', 'null', '-'])
+                                        backup_args = [
+                                            ffmpeg_bin, '-i', file,
+                                            '-f', 'null', '-',
+                                        ]
                                         bak_proc = self._track_subprocess(
                                             await asyncio.create_subprocess_exec(
                                                 *backup_args,
@@ -1288,7 +1478,7 @@ class PlayHandler(threading.Thread):
 
                                 except Exception as e:
                                     if log_enabled:
-                                        logger.error(f'获取音频时长失败: {e}')
+                                        logger.error('获取音频时长失败: %s', type(e).__name__)
                                     audio_duration = 0
 
                             expected_duration = audio_duration
@@ -1317,11 +1507,10 @@ class PlayHandler(threading.Thread):
                                 file,
                                 ss_value=ss_value,
                                 is_bili=_is_bili,
-                                extra_command=extra_command,
                             )
                             if log_enabled:
-                                logger.info(f'正在播放文件: {file}')
-                                logger.info(f'解码命令: {" ".join(_cmd2)[:300]}')
+                                logger.info('正在播放媒体: %s', _media_log_ref(file))
+                                logger.info('启动 ffmpeg 解码器，参数数量=%d', len(_cmd2))
                             if self.should_stop():
                                 return
                             p2 = self._track_subprocess(
@@ -1366,7 +1555,7 @@ class PlayHandler(threading.Thread):
                                         original_loop
                                     )
                                 if log_enabled:
-                                    logger.info(f'开始播放: {file}，频道: {self.channel_id}')
+                                    logger.info('开始播放: %s，频道: %s', _media_log_ref(file), self.channel_id)
 
                             # 方案E：B站DASH流使用更大缓冲区（2秒），减少I/O抖动
                             chunk_size = 384000 if _is_bili else 96000
@@ -1389,12 +1578,12 @@ class PlayHandler(threading.Thread):
                                         except asyncio.TimeoutError:
                                             if p2.returncode is not None:
                                                 if log_enabled:
-                                                    logger.warning(f'解码进程已退出: {file}')
+                                                    logger.warning('解码进程已退出: %s', _media_log_ref(file))
                                                 break
                                             consecutive_empty_reads += 1
                                             if consecutive_empty_reads >= max_empty_reads:
                                                 if log_enabled:
-                                                    logger.warning(f'连续{max_empty_reads}次读取超时，可能网络问题: {file}')
+                                                    logger.warning('连续%d次读取超时，可能网络问题: %s', max_empty_reads, _media_log_ref(file))
                                                 break
                                             continue
 
@@ -1417,12 +1606,12 @@ class PlayHandler(threading.Thread):
                                                             logger.info(f'写入剩余音频数据: {len(total_audio)} 字节')
                                                     except Exception as e:
                                                         if log_enabled:
-                                                            logger.error(f'写入剩余音频数据异常: {e}')
+                                                            logger.error('写入剩余音频数据异常: %s', type(e).__name__)
 
                                                 # 解码器未产出任何音频数据 → 直接跳过，不等待
                                                 if not total_audio:
                                                     if log_enabled:
-                                                        logger.warning(f'解码器无音频输出，跳过: {file}')
+                                                        logger.warning('解码器无音频输出，跳过: %s', _media_log_ref(file))
                                                 else:
                                                     actual_duration = max(0.0, time.time() - first_music_start_time)
                                                     min_play_time = 30.0
@@ -1434,7 +1623,7 @@ class PlayHandler(threading.Thread):
                                                         await asyncio.sleep(wait_sec)
 
                                                 if log_enabled:
-                                                    logger.info(f'音频播放完成: {file}')
+                                                    logger.info('音频播放完成: %s', _media_log_ref(file))
                                                 break
                                         else:
                                             consecutive_empty_reads = 0
@@ -1490,7 +1679,7 @@ class PlayHandler(threading.Thread):
 
                                                     if playback_status == Status.SKIP:
                                                         if log_enabled:
-                                                            logger.info(f'跳过当前歌曲: {file}')
+                                                            logger.info('跳过当前歌曲: %s', _media_log_ref(file))
                                                         skip_song = True
                                                         await self._cleanup_subprocess(
                                                             p2,
@@ -1499,7 +1688,7 @@ class PlayHandler(threading.Thread):
                                                         break
                                                     if playback_status == Status.STOP:
                                                         if log_enabled:
-                                                            logger.info(f'停止播放: {file}')
+                                                            logger.info('停止播放: %s', _media_log_ref(file))
                                                         await self._cleanup_subprocess(
                                                             p2,
                                                             "ffmpeg-decode",
@@ -1511,20 +1700,20 @@ class PlayHandler(threading.Thread):
                                                         return
                                                 except Exception as e:
                                                     if log_enabled:
-                                                        logger.error(f'音频写入异常: {e}')
+                                                        logger.error('音频写入异常: %s', type(e).__name__)
                                                     break
                                         if skip_song:
                                             break
                                     else:
                                         if log_enabled:
-                                            logger.error(f'音频进程异常: {file}')
+                                            logger.error('音频进程异常: %s', _media_log_ref(file))
                                         break
                             except Exception as e:
                                 if log_enabled:
-                                    logger.error(f'音频播放异常: {e}')
+                                    logger.error('音频播放异常: %s', type(e).__name__)
 
                             if log_enabled:
-                                logger.info(f'歌曲播放完成: {file}')
+                                logger.info('歌曲播放完成: %s', _media_log_ref(file))
                             await self._cleanup_subprocess(
                                 p2,
                                 "ffmpeg-decode-done",
@@ -1617,7 +1806,7 @@ class PlayHandler(threading.Thread):
                 await self._cleanup_subprocess(p, "ffmpeg-encode-done")
         except Exception as e:
             if log_enabled:
-                logger.error(f'推流过程中出现错误: {str(e)}', exc_info=True)
+                logger.error('推流过程中出现错误: %s', type(e).__name__)
         finally:
             try:
                 await self._cleanup_subprocess(
@@ -1654,7 +1843,7 @@ class PlayHandler(threading.Thread):
                     '[保活] 频道=%s 失败（%d/3）: %s',
                     self.channel_id,
                     consecutive_failures,
-                    exc,
+                    type(exc).__name__,
                 )
                 if consecutive_failures >= 3:
                     raise RuntimeError(

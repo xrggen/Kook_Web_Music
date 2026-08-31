@@ -19,6 +19,7 @@
 | 文档 | 负责内容 |
 |---|---|
 | [HANDOFF.md](HANDOFF.md) | 当前工程交接、已验证基线、关键实现、风险与推荐后续工作 |
+| [security-hardening.md](security-hardening.md) | 深度审计问题、逐项修复、兼容性变化、代码位置与验证证据 |
 | [architecture.md](architecture.md) | 进程拓扑、Web 控制面持久化、播放会话、媒体管道、并发和恢复机制 |
 | [deployment.md](deployment.md) | Windows/Ubuntu 安装、Auth/SQLite 配置、启动、升级、回滚和验证 |
 | [authentication.md](authentication.md) | Web 登录、Session、CSRF、管理员/普通用户、RBAC、Scope、SQLite IAM 与审计 |

@@ -9,7 +9,6 @@ ALLOWED_EMAIL_SUFFIXES = ("@users.noreply.github.com", "@example.invalid")
 SENSITIVE_PATH = re.compile(r"(?ix)(^|/)(?:\.env(?:\..*)?|(?:cookie|cookies|qq_cookie|bili_cookie)\.(?:txt|json)|qr\.png|[^/]*(?:credential|secret)[^/]*\.json|[^/]*\.(?:pem|key|pfx|p12|jks|keystore|session|session-journal))$")
 ALLOWED_SENSITIVE_PATHS = {"Ubuntu/.env.example", "Ubuntu/Cookie/README.md", "windows/.env.example", "windows/Cookie/README.md"}
 LOCKFILE_SUFFIXES = ("/package-lock.json", "/yarn.lock")
-EXAMPLE_SUFFIXES = ("/.env.example", "运行教程.md", "/README.md", "/README.MD")
 CONTENT_RULES = {
     "private-key": re.compile(rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"),
     "kook-token": re.compile(rb"(?<![A-Za-z0-9+/])\d{1,4}/[A-Za-z0-9+/=]{6,}/[A-Za-z0-9+/=]{16,}(?![A-Za-z0-9+/=])"),
@@ -33,7 +32,6 @@ def git(*args: str, input_data: bytes | None = None) -> bytes:
 def line_number(content: bytes, start: int) -> int: return content.count(b"\n", 0, start) + 1
 def norm(label: str) -> str: return label.replace("\\", "/")
 def is_lockfile(label: str) -> bool: return norm(label).endswith(LOCKFILE_SUFFIXES)
-def is_example(label: str) -> bool: return norm(label).endswith(EXAMPLE_SUFFIXES)
 
 def looks_placeholder(raw: bytes) -> bool:
     value = raw.strip().strip(b"'\"")
@@ -55,8 +53,7 @@ def scan(label: str, content: bytes, secrets: set[str], warnings: set[str]) -> N
         value = m.group(2).strip().strip(b"'\"")
         if looks_placeholder(value) or len(value) < 12: continue
         loc = f"{label}:{line_number(content, m.start())}"
-        if is_example(label): warnings.add(f"example-secret-assignment: {loc}")
-        else: secrets.add(f"env-secret-assignment: {loc}")
+        secrets.add(f"env-secret-assignment: {loc}")
     for m in EMAIL.finditer(content):
         email = m.group(0).decode("ascii", errors="ignore").lower()
         if not email.endswith(ALLOWED_EMAIL_SUFFIXES): warnings.add(f"email-address: {label}:{line_number(content, m.start())}")

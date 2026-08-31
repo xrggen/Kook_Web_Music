@@ -11,7 +11,7 @@ cd Ubuntu
 ./.venv/bin/python run.py
 ```
 
-首次安装请先阅读根目录 [Ubuntu 运行教程](../Ubuntu运行教程.md)；完整配置、systemd、迁移、升级和验证流程见 [部署指南](../docs/deployment.md)。
+首次安装请先阅读根目录 [Ubuntu 运行教程](../Ubuntu运行教程.md)；完整配置、systemd、迁移、升级和验证流程见 [部署指南](../docs/deployment.md)，安全兼容性变化见 [修复基线](../docs/security-hardening.md)。
 
 ## Ubuntu 差异
 

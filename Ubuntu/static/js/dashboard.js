@@ -4,7 +4,6 @@ let currentGuildId = null;
 let currentGuildName = null;
 let currentChannelId = null;
 let currentPlatform = 'wy';
-let socket = null;
 
 let currentChannels = [];
 let playlistRequestSequence = 0;
@@ -26,7 +25,6 @@ document.addEventListener('DOMContentLoaded', () => {
     bindEvents();
     syncPlatformUI();
     updateTargetUI();
-    initializeSocketIO();
     loadGuilds();
 
     window.setInterval(() => {
@@ -60,38 +58,6 @@ function persistPreference(key, value) {
     } catch (error) {
         console.warn(`无法保存偏好 ${key}:`, error);
     }
-}
-
-function initializeSocketIO() {
-    if (typeof io === 'undefined') {
-        return;
-    }
-
-    socket = io();
-    socket.on('connect', () => {
-        if (currentGuildId) {
-            socket.emit('join_room', { guild_id: currentGuildId });
-        }
-    });
-    socket.on('playlist_update', data => {
-        if (
-            data.guild_id === currentGuildId &&
-            (!data.channel_id || data.channel_id === currentChannelId)
-        ) {
-            updatePlaylist(data.playlist || []);
-            if (data.playback_modes) {
-                updatePlaybackModes(data.playback_modes);
-            }
-        }
-    });
-    socket.on('player_status', data => {
-        if (
-            data.guild_id === currentGuildId &&
-            (!data.channel_id || data.channel_id === currentChannelId)
-        ) {
-            updatePlayerStatus(data);
-        }
-    });
 }
 
 async function requestJSON(url, options = {}) {
@@ -206,10 +172,6 @@ async function selectGuild(guildId, guildName, options = {}) {
     document.getElementById('server-name').textContent = currentGuildName;
     setVisible('server-info-container', true);
     updateTargetUI();
-
-    if (socket) {
-        socket.emit('join_room', { guild_id: currentGuildId });
-    }
 
     await loadChannels(currentGuildId);
 }

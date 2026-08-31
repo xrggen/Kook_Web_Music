@@ -62,11 +62,61 @@ class ControlPlaneAuthTests(unittest.TestCase):
         global_id = self._insert_user("global_user", scopes="*")
         guild_id = self._insert_user("guild_user", scopes="guild:100")
         channel_id = self._insert_user("channel_user", scopes="channel:100/200")
+        auth.sync_channel("999", "888", "全局范围测试频道")
+        auth.sync_channel("100", "999", "服务器范围测试频道")
+        auth.sync_channel("100", "200", "频道范围测试频道")
         self.assertTrue(auth.scope_allows(auth.get_user_by_id(global_id), "999", "888"))
         self.assertTrue(auth.scope_allows(auth.get_user_by_id(guild_id), "100", "999"))
         self.assertFalse(auth.scope_allows(auth.get_user_by_id(guild_id), "101", "999"))
         self.assertTrue(auth.scope_allows(auth.get_user_by_id(channel_id), "100", "200"))
         self.assertFalse(auth.scope_allows(auth.get_user_by_id(channel_id), "100", "201"))
+
+    def test_scope_rejects_claimed_guild_that_does_not_own_channel(self):
+        user_id = self._insert_user("guild_owner", scopes="guild:100")
+        auth.sync_channel("200", "300", "其他服务器频道")
+        user = auth.get_user_by_id(user_id)
+        self.assertFalse(auth.scope_allows(user, "100", "300"))
+
+    def test_request_resource_ids_reject_query_body_mismatch_and_duplicates(self):
+        app = Flask(__name__)
+        with app.test_request_context(
+            "/api/play?guild_id=100",
+            method="POST",
+            json={"guild_id": "200", "channel_id": "300"},
+        ):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
+        with app.test_request_context("/api/play?guild_id=100&guild_id=100"):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
+        with app.test_request_context(
+            "/api/play?channel_id=300",
+            method="POST",
+            json={"guild_id": "200"},
+        ):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
+        with app.test_request_context(
+            "/api/play",
+            method="POST",
+            json={"guild_id": 200, "channel_id": "300"},
+        ):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
+        with app.test_request_context(
+            "/api/play",
+            method="POST",
+            json={"guild_id": " 200", "channel_id": "300"},
+        ):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
+        with app.test_request_context(
+            "/api/play?guild_id=guild%0A1",
+            method="POST",
+            json={"channel_id": "300"},
+        ):
+            with self.assertRaises(ValueError):
+                auth._request_resource_ids()
 
     def test_unauthenticated_control_plane_redirects_to_login(self):
         app = Flask(__name__)

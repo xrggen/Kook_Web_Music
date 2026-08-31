@@ -10,7 +10,6 @@ import requests
 import logging
 from logging.handlers import RotatingFileHandler
 import shlex
-import subprocess
 from khl import Bot, Message, MessageTypes
 from khl.command.lexer import DefaultLexer
 from khl.command.exception import Exceptions
@@ -51,7 +50,7 @@ try:
     from .kookvoice.requestor import VoiceRequestor
     from .config import *
     from .runtime_health import runtime_health
-    from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
+    from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue, load_cookie_header
     from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
 except ImportError:
@@ -59,11 +58,22 @@ except ImportError:
     from kookvoice.requestor import VoiceRequestor
     from config import *
     from runtime_health import runtime_health
-    from utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue
+    from utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue, load_cookie_header
     from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
 
 # 配置日志。run.py 可能已经初始化根日志器，因此不能再次依赖 basicConfig。
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self):
+        stream = super()._open()
+        if os.name != 'nt':
+            try:
+                os.chmod(self.baseFilename, 0o600)
+            except OSError:
+                pass
+        return stream
+
+
 _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
 _root_logger = logging.getLogger()
 _root_logger.setLevel(logging.INFO)
@@ -75,7 +85,7 @@ if not any(
     and os.path.abspath(getattr(handler, 'baseFilename', '')) == _log_path
     for handler in _root_logger.handlers
 ):
-    _file_handler = RotatingFileHandler(
+    _file_handler = _PrivateRotatingFileHandler(
         _log_path,
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
@@ -92,10 +102,6 @@ logger = logging.getLogger(__name__)
 # 只关闭Flask的HTTP访问日志，保留其他日志
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-# 初始化Flask应用
-app = Flask(__name__)
-app.config['SECRET_KEY'] = SECRET_KEY
-
 # Bot 与 Web 使用独立心跳，避免活跃的 Flask 请求掩盖 Bot 事件循环卡死。
 BOT_HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".bot_heartbeat")
 WEB_HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".web_heartbeat")
@@ -106,7 +112,6 @@ def _write_heartbeat(path):
         heartbeat.write(str(time.time()))
 
 
-@app.before_request
 def _update_heartbeat():
     """记录 Web 服务心跳；Bot 看门狗使用独立文件。"""
     try:
@@ -114,16 +119,6 @@ def _update_heartbeat():
     except Exception:
         logger.exception("更新Web心跳失败")
 
-
-# 尝试导入SocketIO，如果不可用则提供备用方案
-try:
-    from flask_socketio import SocketIO, emit
-    socketio = SocketIO(app, cors_allowed_origins="*")
-    socketio_available = True
-except ImportError:
-    logger.warning("flask_socketio未安装，将使用备用方案")
-    socketio = None
-    socketio_available = False
 
 # 配置KOOK机器人
 # khl 在构造阶段要求非空字符串；占位值仅用于无凭据的导入、测试与配置
@@ -160,10 +155,10 @@ _install_gateway_activity_probe()
 
 # ========== 权限白名单 ==========
 def _is_allowed(msg: Message) -> bool:
-    """检查消息发送者是否在白名单内。全部白名单为空 → 允许所有人；
+    """检查消息发送者是否在白名单内。全部白名单为空时默认拒绝；
        多个白名单均非空时取交集（必须同时满足）。"""
     if not ALLOWGROUP and not ALLOWCHANNEL and not ALLOWUSER:
-        return True
+        return BOT_ALLOW_UNRESTRICTED
 
     guild_id   = msg.ctx.guild.id
     channel_id = msg.ctx.channel.id
@@ -183,10 +178,11 @@ _original_handle = bot.command.handle
 
 async def _patched_handle(loop, client, msg: Message, *args, **kwargs):
     if not _is_allowed(msg):
+        command_name = str(msg.content).split(maxsplit=1)[0][:32]
         logger.info(
             "[权限] 拒绝: 用户=%s 频道=%s 服务器=%s 指令=%s",
             msg.author_id, msg.ctx.channel.id, msg.ctx.guild.id,
-            msg.content[:120],
+            command_name,
         )
         return
     return await _original_handle(loop, client, msg, *args, **kwargs)
@@ -206,9 +202,9 @@ async def on_song_start(play_info: kookvoice.PlayInfo):
             return
         logger.info("[播放通知] 正在播放: %s (频道=%s)", song_name, text_channel_id)
         channel = await bot.client.fetch_public_channel(text_channel_id)
-        await channel.send(f"🎵 正在播放: **{song_name}**")
+        await channel.send(f"🎵 正在播放: {song_name}", type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[播放通知] 发送失败: {e}")
+        logger.error(f"[播放通知] 发送失败: {type(e).__name__}")
 
 # 强制验证Token有效性
 async def verify_token() -> bool:
@@ -225,7 +221,7 @@ async def verify_token() -> bool:
         print(f"Token验证成功，可访问 {len(items)} 个服务器")
         return True
     except Exception as e:
-        print(f"Token验证失败: {str(e)}")
+        logger.error("Token验证失败: %s", type(e).__name__)
         return False
 
 # 配置FFMPEG
@@ -235,7 +231,7 @@ try:
     logger.info(f"FFMPEG路径: {FFMPEG_PATH}")
     logger.info(f"FFPROBE路径: {FFPROBE_PATH}")
 except Exception as e:
-    logger.error(f"FFMPEG配置错误: {str(e)}")
+    logger.error("FFMPEG配置错误: %s", type(e).__name__)
     sys.exit(1)
 
 # 获取用户所在的语音频道
@@ -253,7 +249,7 @@ async def find_user_voice_channel(gid: str, aid: str) -> Union[str, None]:
         logger.warning(f"用户 {aid} 不在任何语音频道")
         return None
     except Exception as e:
-        logger.error(f"获取语音频道ID异常: {e}")
+        logger.error(f"获取语音频道ID异常: {type(e).__name__}")
         return None
 
 # 获取服务器列表
@@ -264,7 +260,7 @@ async def get_guild_list():
             return guilds["items"]
         return []
     except Exception as e:
-        logger.error(f"获取服务器列表异常: {e}")
+        logger.error(f"获取服务器列表异常: {type(e).__name__}")
         return []
 
 # 获取频道列表
@@ -275,7 +271,7 @@ async def get_channel_list(guild_id):
             return channels["items"]
         return []
     except Exception as e:
-        logger.error(f"获取频道列表异常: {e}")
+        logger.error(f"获取频道列表异常: {type(e).__name__}")
         return []
 
 # 根据用户所在频道或服务器内唯一活跃频道，定位控制目标
@@ -291,38 +287,17 @@ async def _resolve_channel(guild_id: str, user_id: str):
         return active[0]
     return None
 
+
+def _queue_has_capacity(channel_id, requested):
+    snapshot = kookvoice.get_state_snapshot()
+    state = snapshot['play_list'].get(str(channel_id), {})
+    return len(state.get('play_list', [])) + max(0, int(requested)) <= MAX_QUEUE_TRACKS
+
 # 机器人命令
 @bot.command(name='ping')
 async def ping_cmd(msg: Message):
     logger.info(f"[命令:ping] 用户={msg.author_id} 频道={msg.ctx.channel.id}")
     await msg.reply('pong!')
-
-@bot.command(name='cmd')
-async def cmd_exec(msg: Message, command: str = ''):
-    """在服务器执行CMD命令并返回输出"""
-    try:
-        if not command.strip():
-            await msg.reply("❌ 请指定要执行的命令，例如: `/cmd dir`")
-            return
-        # CMD强管控：仅名单内用户可执行（留空=全员无权限）
-        if msg.author_id not in CMD_ALLOWUSER:
-            logger.info("[命令:cmd] CMD权限拒绝: 用户=%s", msg.author_id)
-            await msg.reply("❌ 你没有权限执行CMD命令")
-            return
-        logger.info(f"[命令:cmd] 用户={msg.author_id} 命令={command[:200]}")
-        proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
-            timeout=120, cwd=os.path.dirname(__file__),
-        )
-        out = (proc.stdout + proc.stderr).strip() or "(无输出)"
-        if len(out) > 1900:
-            out = out[:1900] + "\n... (输出过长已截断)"
-        await msg.reply(f"```\n{out}\n```")
-    except subprocess.TimeoutExpired:
-        await msg.reply("⏱️ 命令执行超时（120秒）")
-    except Exception as e:
-        logger.error(f"[命令:cmd] 出错: {e}")
-        await msg.reply(f"⚠️ 执行失败: {str(e)}")
 
 @bot.command(name='加入')
 async def join_cmd(msg: Message):
@@ -335,12 +310,12 @@ async def join_cmd(msg: Message):
             player.join(msg.ctx.guild.id)
             voice_channel_info = await bot.client.fetch_public_channel(voice_channel)
             logger.info(f"[命令:加入] 成功 频道=#{voice_channel_info.name}({voice_channel})")
-            await msg.reply(f"✅ 已加入语音频道 #{voice_channel_info.name}")
+            await msg.reply(f"✅ 已加入语音频道 #{voice_channel_info.name}", type=MessageTypes.TEXT)
             return True
         logger.warning(f"[命令:加入] 用户不在语音频道")
         await msg.reply("❌ 您当前不在语音频道中")
     except Exception as e:
-        logger.error(f"[命令:加入] 出错: {e}")
+        logger.error(f"[命令:加入] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 加入失败，请检查权限或稍后再试")
 
 @bot.command(name='wy')
@@ -350,62 +325,57 @@ async def play_music(msg: Message, music_input: str = ''):
         if not music_input.strip():
             await msg.reply("❌ 请指定歌曲名，例如: `/wy 晴天`")
             return
-        logger.info(f"[命令:wy] 用户={msg.author_id} 输入={music_input}")
+        logger.info(f"[命令:wy] 用户={msg.author_id}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
             return
 
-        # 判断是否为直链
-        if music_input.startswith("http"):
-            music_url = music_input
-            song_name = "直链音乐"
-            logger.info(f"[命令:wy] 直链模式: {music_url[:80]}...")
-        else:
-            try:
-                # 搜索歌曲 (utils.search_music already logs the API call)
-                songs = search_music(music_input)
-                if not songs:
-                    await msg.reply("❌ 未搜索到歌曲")
-                    return
-
-                song = songs[0]
-                song_id = song['id']
-                song_name = song.get('name', music_input)
-                artist_name = song.get('ar', [{}])[0].get('name', '未知')
-
-                logger.info(f"[命令:wy] 选中: {song_name} - {artist_name} (id={song_id})")
-
-                # 获取歌曲URL (utils.get_music_url already logs the API call)
-                music_url = get_music_url(song_id)
-                if not music_url:
-                    logger.warning(f"[命令:wy] 获取URL失败 song_id={song_id}")
-                    await msg.reply("❌ 获取直链失败，可能是VIP歌曲")
-                    return
-
-                logger.info(f"[命令:wy] 获取到URL: {music_url[:80]}...")
-
-            except requests.exceptions.Timeout:
-                await msg.reply("❌ 网络超时，请稍后重试")
+        if music_input.strip().lower().startswith(("http://", "https://")):
+            await msg.reply("❌ 为保护服务主机，已禁用任意媒体直链；请使用歌曲名搜索")
+            return
+        try:
+            # 搜索歌曲 (utils.search_music already logs the API call)
+            songs = search_music(music_input)
+            if not songs:
+                await msg.reply("❌ 未搜索到歌曲")
                 return
-            except requests.exceptions.ConnectionError:
-                await msg.reply("❌ 无法连接到音乐API服务器")
+
+            song = songs[0]
+            song_id = song['id']
+            song_name = song.get('name', music_input)
+            artist_name = song.get('ar', [{}])[0].get('name', '未知')
+
+            logger.info("[命令:wy] 选中 name=%r artist=%r id=%r", str(song_name)[:120], str(artist_name)[:120], str(song_id)[:64])
+
+            # 获取歌曲URL (utils.get_music_url already logs the API call)
+            music_url = get_music_url(song_id)
+            if not music_url:
+                logger.warning(f"[命令:wy] 获取URL失败 song_id={song_id}")
+                await msg.reply("❌ 获取播放地址失败，可能是VIP歌曲")
                 return
-            except Exception as e:
-                logger.error(f"[命令:wy] 搜索/取链异常: {e}")
-                await msg.reply(f"❌ 发生未知错误: {str(e)}")
-                return
+
+        except requests.exceptions.Timeout:
+            await msg.reply("❌ 网络超时，请稍后重试")
+            return
+        except requests.exceptions.ConnectionError:
+            await msg.reply("❌ 无法连接到音乐API服务器")
+            return
+        except Exception as e:
+            logger.error(f"[命令:wy] 搜索/取链异常: {type(e).__name__}")
+            await msg.reply("❌ 搜索或获取播放地址失败")
+            return
 
         # 添加音乐到播放队列
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
         extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
         player.add_music(music_url, extra_data, msg.ctx.guild.id)
-        logger.info(f"[命令:wy] 已加入队列: {song_name}")
+        logger.info("[命令:wy] 已加入队列 name=%r", str(song_name)[:120])
 
-        await msg.reply(f"✅ {song_name} 已加入播放队列")
+        await msg.reply(f"✅ {song_name} 已加入播放队列", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:wy] 出错: {e}")
+        logger.error(f"[命令:wy] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 播放失败，请稍后再试")
 
 @bot.command(name='qq')
@@ -415,47 +385,42 @@ async def qq_cmd(msg: Message, music_input: str = ''):
         if not music_input.strip():
             await msg.reply("❌ 请指定歌曲名，例如: `/qq 晴天`")
             return
-        logger.info(f"[命令:qq] 用户={msg.author_id} 输入={music_input}")
+        logger.info(f"[命令:qq] 用户={msg.author_id}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
             return
 
-        # 判断是否为直链
-        if music_input.startswith("http"):
-            music_url = music_input
-            song_name = "直链音乐"
-            logger.info(f"[命令:qq] 直链模式: {music_url[:80]}...")
-        else:
-            songs = search_qq_music(music_input)
-            if not songs:
-                await msg.reply("❌ 未搜索到QQ音乐歌曲")
-                return
+        if music_input.strip().lower().startswith(("http://", "https://")):
+            await msg.reply("❌ 为保护服务主机，已禁用任意媒体直链；请使用歌曲名搜索")
+            return
+        songs = search_qq_music(music_input)
+        if not songs:
+            await msg.reply("❌ 未搜索到QQ音乐歌曲")
+            return
 
-            song = songs[0]
-            songmid = song['id']
-            song_name = song.get('name', music_input)
-            artist_name = song.get('ar', [{}])[0].get('name', '未知')
+        song = songs[0]
+        songmid = song['id']
+        song_name = song.get('name', music_input)
+        artist_name = song.get('ar', [{}])[0].get('name', '未知')
 
-            logger.info(f"[命令:qq] 选中: {song_name} - {artist_name} (songmid={songmid})")
+        logger.info("[命令:qq] 选中 name=%r artist=%r songmid=%r", str(song_name)[:120], str(artist_name)[:120], str(songmid)[:64])
 
-            music_url = get_qq_music_url(songmid)
-            if not music_url:
-                logger.warning(f"[命令:qq] 获取URL失败 songmid={songmid}")
-                await msg.reply("❌ 获取直链失败，可能是VIP歌曲")
-                return
-
-            logger.info(f"[命令:qq] 获取到URL: {music_url[:80]}...")
+        music_url = get_qq_music_url(songmid)
+        if not music_url:
+            logger.warning(f"[命令:qq] 获取URL失败 songmid={songmid}")
+            await msg.reply("❌ 获取播放地址失败，可能是VIP歌曲")
+            return
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
         extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
         player.add_music(music_url, extra_data, msg.ctx.guild.id)
-        logger.info(f"[命令:qq] 已加入队列: {song_name}")
+        logger.info("[命令:qq] 已加入队列 name=%r", str(song_name)[:120])
 
-        await msg.reply(f"✅ {song_name} 已加入播放队列 (QQ音乐)")
+        await msg.reply(f"✅ {song_name} 已加入播放队列 (QQ音乐)", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:qq] 出错: {e}")
+        logger.error(f"[命令:qq] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 播放失败，请稍后再试")
 
 @bot.command(name='停止')
@@ -471,7 +436,7 @@ async def stop_music(msg: Message):
         player.stop()
         await msg.reply("⏹️ 已停止播放")
     except Exception as e:
-        logger.error(f"[命令:停止] 出错: {e}")
+        logger.error(f"[命令:停止] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 停止失败")
 
 @bot.command(name='跳过')
@@ -487,7 +452,7 @@ async def skip_music(msg: Message):
         player.skip()
         await msg.reply("⏭️ 已跳过当前歌曲")
     except Exception as e:
-        logger.error(f"[命令:跳过] 出错: {e}")
+        logger.error(f"[命令:跳过] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 跳过失败")
 
 @bot.command(name='暂停')
@@ -503,7 +468,7 @@ async def pause_music(msg: Message):
         player.pause()
         await msg.reply("⏸️ 已暂停播放")
     except Exception as e:
-        logger.error(f"[命令:暂停] 出错: {e}")
+        logger.error(f"[命令:暂停] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 暂停失败")
 
 @bot.command(name='继续')
@@ -519,7 +484,7 @@ async def resume_music(msg: Message):
         player.resume()
         await msg.reply("▶️ 已继续播放")
     except Exception as e:
-        logger.error(f"[命令:继续] 出错: {e}")
+        logger.error(f"[命令:继续] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 继续播放失败")
 
 @bot.command(name='单曲循环')
@@ -536,7 +501,7 @@ async def repeat_cmd(msg: Message):
         suffix = "（列表循环已关闭）" if enabled else ""
         await msg.reply(f"🔂 单曲循环已{'开启' if enabled else '关闭'}{suffix}")
     except Exception as e:
-        logger.error(f"[命令:单曲循环] 出错: {e}")
+        logger.error(f"[命令:单曲循环] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 操作失败，请稍后再试")
 
 @bot.command(name='循环播放列表')
@@ -553,7 +518,7 @@ async def playlist_repeat_cmd(msg: Message):
         suffix = "（单曲循环已关闭）" if enabled else ""
         await msg.reply(f"🔁 列表循环已{'开启' if enabled else '关闭'}{suffix}")
     except Exception as e:
-        logger.error(f"[命令:循环播放列表] 出错: {e}")
+        logger.error(f"[命令:循环播放列表] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 操作失败，请稍后再试")
 
 @bot.command(name='随机播放')
@@ -581,7 +546,7 @@ async def shuffle_cmd(msg: Message):
         else:
             await msg.reply(f"🔀 随机播放已关闭（{count} 首已恢复原序）")
     except Exception as e:
-        logger.error(f"[命令:随机播放] 出错: {e}")
+        logger.error(f"[命令:随机播放] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 操作失败，请稍后再试")
 
 _playback_recovery_lock = threading.Lock()
@@ -603,9 +568,9 @@ async def _force_leave_voice_channels(channel_ids):
             logger.warning(
                 "[脱离卡死] 离开频道 %s 未获确认（可能已经离开）: %s",
                 channel_id,
-                exc,
+                type(exc).__name__,
             )
-            return channel_id, str(exc)
+            return channel_id, type(exc).__name__
 
     try:
         results = await asyncio.gather(
@@ -767,7 +732,7 @@ async def playlist_play(msg: Message, playlist_input: str = ''):
         if not playlist_input.strip():
             await msg.reply("❌ 请指定歌单ID或链接，例如: `/wygd 123456789`")
             return
-        logger.info(f"[命令:wygd] 用户={msg.author_id} 输入={playlist_input}")
+        logger.info(f"[命令:wygd] 用户={msg.author_id}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
@@ -804,13 +769,16 @@ async def playlist_play(msg: Message, playlist_input: str = ''):
         playlist_info = get_playlist(playlist_id)
         playlist_name = playlist_info.get('name', '未知歌单') if playlist_info else f'歌单{playlist_id}'
         track_count = playlist_info.get('trackCount', 0) if playlist_info else 0
-        logger.info(f"[命令:wygd] 歌单: {playlist_name} 总数: {track_count}")
-        await msg.reply(f"🎶 正在获取歌单「{playlist_name}」({track_count}首)...")
+        logger.info("[命令:wygd] 歌单=%r 总数=%s", str(playlist_name)[:120], track_count)
+        await msg.reply(f"🎶 正在获取歌单「{playlist_name}」({track_count}首)...", type=MessageTypes.TEXT)
 
-        # 使用与 Web 控制台相同的 get_playlist_urls（分页拉取全部歌曲，无上限）
+        # 使用与 Web 控制台相同的 get_playlist_urls（按配置上限分页拉取）
         songs = get_playlist_urls(playlist_id)
         if not songs:
             await msg.reply("❌ 歌单为空或无法获取歌曲列表")
+            return
+        if not _queue_has_capacity(voice_channel_id, len(songs)):
+            await msg.reply(f"❌ 导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）")
             return
 
         # 添加到播放队列（使用 PLAYLIST_SONG 标记，URL 播放时实时获取）
@@ -831,10 +799,10 @@ async def playlist_play(msg: Message, playlist_input: str = ''):
             voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
         )
         logger.info(f"[命令:wygd] 完成 导入{len(songs)}首 预取{prefetched}首")
-        await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲")
+        await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:wygd] 出错: {e}")
+        logger.error(f"[命令:wygd] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 播放歌单失败，请稍后再试")
 
 @bot.command(name='qqgd')
@@ -844,7 +812,7 @@ async def qq_playlist_play(msg: Message, playlist_input: str = ''):
         if not playlist_input.strip():
             await msg.reply("❌ 请指定歌单ID或链接，例如: `/qqgd 123456789`")
             return
-        logger.info(f"[命令:qqgd] 用户={msg.author_id} 输入={playlist_input}")
+        logger.info(f"[命令:qqgd] 用户={msg.author_id}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
@@ -879,12 +847,15 @@ async def qq_playlist_play(msg: Message, playlist_input: str = ''):
         playlist_info = get_qq_playlist(disstid)
         playlist_name = playlist_info.get('name', f'歌单{disstid}') if playlist_info else f'歌单{disstid}'
         track_count = playlist_info.get('trackCount', 0) if playlist_info else 0
-        logger.info(f"[命令:qqgd] 歌单: {playlist_name} 总数: {track_count}")
-        await msg.reply(f"🎶 正在获取歌单「{playlist_name}」({track_count}首)...")
+        logger.info("[命令:qqgd] 歌单=%r 总数=%s", str(playlist_name)[:120], track_count)
+        await msg.reply(f"🎶 正在获取歌单「{playlist_name}」({track_count}首)...", type=MessageTypes.TEXT)
 
         songs = get_qq_playlist_urls(disstid)
         if not songs:
             await msg.reply("❌ 歌单为空或无法获取歌曲列表")
+            return
+        if not _queue_has_capacity(voice_channel_id, len(songs)):
+            await msg.reply(f"❌ 导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）")
             return
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
@@ -903,10 +874,10 @@ async def qq_playlist_play(msg: Message, playlist_input: str = ''):
             voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
         )
         logger.info(f"[命令:qqgd] 完成 导入{len(songs)}首 预取{prefetched}首")
-        await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲 (QQ音乐)")
+        await msg.reply(f"✅ 已导入歌单「{playlist_name}」共 {len(songs)} 首歌曲 (QQ音乐)", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:qqgd] 出错: {e}")
+        logger.error(f"[命令:qqgd] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 播放歌单失败，请稍后再试")
 
 @bot.command(name='wy我的歌单')
@@ -914,21 +885,28 @@ async def wy_playlists_cmd(msg: Message):
     """列出当前登录网易云账号的歌单"""
     try:
         logger.info(f"[命令:wy我的歌单] 用户={msg.author_id}")
-        cookie_path = os.path.join(os.path.dirname(__file__), "Cookie", "cookie.txt")
-        cookie = ""
-        if os.path.exists(cookie_path):
-            with open(cookie_path, "r", encoding="utf-8") as f:
-                cookie = f.read().strip()
+        cookie = load_cookie_header()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         if cookie:
             headers["Cookie"] = cookie
-        status_resp = requests.get(f"{MUSIC_API_BASE}/login/status", headers=headers, timeout=10)
+        status_resp = requests.get(
+            f"{MUSIC_API_BASE}/login/status",
+            headers=headers,
+            timeout=10,
+            allow_redirects=False,
+        )
         status_data = status_resp.json().get("data", {})
         uid = (status_data.get("account") or {}).get("id") or (status_data.get("profile") or {}).get("userId")
         if not uid:
             await msg.reply("❌ 当前未登录网易云账号\n请在Web控制台 /account 页面登录")
             return
-        pl_resp = requests.get(f"{MUSIC_API_BASE}/user/playlist?uid={uid}&limit=50", headers=headers, timeout=15)
+        pl_resp = requests.get(
+            f"{MUSIC_API_BASE}/user/playlist",
+            params={"uid": str(uid), "limit": 50},
+            headers=headers,
+            timeout=15,
+            allow_redirects=False,
+        )
         pl_data = pl_resp.json()
         playlists = pl_data.get("playlist", [])
         if not playlists:
@@ -937,9 +915,9 @@ async def wy_playlists_cmd(msg: Message):
         lines = [f"🎵 我的网易云歌单 ({len(playlists)} 个):"]
         for pl in playlists[:30]:
             lines.append(f"  ▎{pl.get('name','?')}  (ID: {pl.get('id','?')})")
-        await msg.reply("\n".join(lines))
+        await msg.reply("\n".join(lines), use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:wy我的歌单] 出错: {e}")
+        logger.error(f"[命令:wy我的歌单] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取歌单失败，请稍后再试")
 
 @bot.command(name='qq我的歌单')
@@ -960,9 +938,9 @@ async def qq_playlists_cmd(msg: Message):
         for pl in playlists[:30]:
             tc = pl.get("trackCount", 0)
             lines.append(f"  ▎{pl['name']} ({tc}首)  (ID: {pl['id']})")
-        await msg.reply("\n".join(lines))
+        await msg.reply("\n".join(lines), use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:qq我的歌单] 出错: {e}")
+        logger.error(f"[命令:qq我的歌单] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取歌单失败，请稍后再试")
 
 @bot.command(name='当前账号')
@@ -970,11 +948,7 @@ async def account_info_cmd(msg: Message):
     """查询当前登录的网易云账号信息"""
     try:
         logger.info(f"[命令:当前账号] 用户={msg.author_id}")
-        cookie_path = os.path.join(os.path.dirname(__file__), "Cookie", "cookie.txt")
-        cookie = ""
-        if os.path.exists(cookie_path):
-            with open(cookie_path, "r", encoding="utf-8") as f:
-                cookie = f.read().strip()
+        cookie = load_cookie_header()
         has_cookie = bool(cookie)
         logger.info(f"[命令:当前账号] Cookie状态: {'已设置' if has_cookie else '未设置'}")
 
@@ -986,7 +960,7 @@ async def account_info_cmd(msg: Message):
 
         api_url = f"{MUSIC_API_BASE}/login/status"
         logger.info(f"[命令:当前账号] 调用: GET {api_url}")
-        res = requests.get(api_url, headers=headers, timeout=10)
+        res = requests.get(api_url, headers=headers, timeout=10, allow_redirects=False)
         body = res.json()
         data = body.get("data", {})
         account = data.get("account")
@@ -1007,7 +981,7 @@ async def account_info_cmd(msg: Message):
         else:
             vip_str = "普通用户"
 
-        logger.info(f"[命令:当前账号] 账号={nickname} uid={uid} vip={vip_str}")
+        logger.info("[命令:当前账号] 账号=%r uid=%r vip=%r", str(nickname)[:120], str(uid)[:64], str(vip_str)[:64])
         uid_str = str(uid)
         n = len(uid_str)
         if n > 4:
@@ -1019,9 +993,9 @@ async def account_info_cmd(msg: Message):
             f"▎UID: {uid_str}\n"
             f"▎身份: {vip_str}"
         )
-        await msg.reply(info)
+        await msg.reply(info, use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:当前账号] 出错: {e}")
+        logger.error(f"[命令:当前账号] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取账号信息失败，请稍后再试")
 
 @bot.command(name='qq当前账号')
@@ -1061,9 +1035,9 @@ async def qq_account_info_cmd(msg: Message):
             f"▎QQ号: {display_uin}\n"
             f"▎状态: Cookie有效 ({exp_str}后过期)"
         )
-        await msg.reply(info)
+        await msg.reply(info, use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:qq当前账号] 出错: {e}")
+        logger.error(f"[命令:qq当前账号] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取QQ音乐账号信息失败，请稍后再试")
 
 @bot.command(name='bili')
@@ -1073,7 +1047,7 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
         if not music_input.strip():
             await msg.reply("❌ 请指定关键词，例如: `/bili 春日影`")
             return
-        logger.info(f"[命令:bili] 用户={msg.author_id} 输入={music_input} 分P={page_input}")
+        logger.info(f"[命令:bili] 用户={msg.author_id} 分P={page_input}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
@@ -1112,7 +1086,7 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
             song_name = song.get('name', music_input)
             artist_name = song.get('ar', [{}])[0].get('name', '未知')
 
-            logger.info(f"[命令:bili] 选中: {song_name} - {artist_name} (bvid={bvid})")
+            logger.info("[命令:bili] 选中 name=%r artist=%r bvid=%r", str(song_name)[:120], str(artist_name)[:120], str(bvid)[:64])
 
             play_info = get_bili_play_url(bvid)
         if not play_info:
@@ -1120,7 +1094,6 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
             return
 
         music_url = play_info["raw_url"]
-        logger.info(f"[命令:bili] 获取到URL: {music_url[:80]}...")
 
         if play_info.get("title") and not bv_match:
             song_name = f"[B站] {song_name} - {play_info['title']}"
@@ -1132,15 +1105,15 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
             "duration": play_info.get("duration", 0),  # 方案A：API已知时长
         }
         player.add_music(music_url, extra_data, msg.ctx.guild.id)
-        logger.info(f"[命令:bili] 已加入队列: {song_name} (时长={play_info.get('duration', 0)}s)")
+        logger.info("[命令:bili] 已加入队列 name=%r duration=%ss", str(song_name)[:120], play_info.get('duration', 0))
 
         _page_hint = ""
         if _total_pages > 1:
             _page_hint = f" (P{_target_page}/{_total_pages})"
-        await msg.reply(f"✅ {song_name}{_page_hint} 已加入播放队列 (B站)")
+        await msg.reply(f"✅ {song_name}{_page_hint} 已加入播放队列 (B站)", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:bili] 出错: {e}")
+        logger.error(f"[命令:bili] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 播放失败，请稍后再试")
 
 @bot.command(name='bili歌单')
@@ -1150,7 +1123,7 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
         if not fav_input.strip():
             await msg.reply("❌ 请指定收藏夹ID，例如: `/bili歌单 123456789`")
             return
-        logger.info(f"[命令:bili歌单] 用户={msg.author_id} 输入={fav_input}")
+        logger.info(f"[命令:bili歌单] 用户={msg.author_id}")
         voice_channel_id = await find_user_voice_channel(msg.ctx.guild.id, msg.author_id)
         if voice_channel_id is None:
             await msg.reply("❌ 请先加入语音频道")
@@ -1182,11 +1155,14 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
         except Exception:
             pass
 
-        await msg.reply(f"🎶 正在获取B站收藏夹「{fav_name}」...")
+        await msg.reply(f"🎶 正在获取B站收藏夹「{fav_name}」...", type=MessageTypes.TEXT)
 
         songs = get_bili_favorite_all_tracks(media_id)
         if not songs:
             await msg.reply("❌ 收藏夹为空或无法获取歌曲列表")
+            return
+        if not _queue_has_capacity(voice_channel_id, len(songs)):
+            await msg.reply(f"❌ 导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）")
             return
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
@@ -1206,10 +1182,10 @@ async def bili_playlist_cmd(msg: Message, fav_input: str = ''):
             voice_channel_id, kookvoice.play_list, lock=kookvoice.state_lock
         )
         logger.info(f"[命令:bili歌单] 完成 导入{len(songs)}首 预取{prefetched}首")
-        await msg.reply(f"✅ 已导入B站收藏夹「{fav_name}」共 {len(songs)} 首歌曲")
+        await msg.reply(f"✅ 已导入B站收藏夹「{fav_name}」共 {len(songs)} 首歌曲", type=MessageTypes.TEXT)
 
     except Exception as e:
-        logger.error(f"[命令:bili歌单] 出错: {e}")
+        logger.error(f"[命令:bili歌单] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 导入失败，请稍后再试")
 
 @bot.command(name='bili我的歌单')
@@ -1228,9 +1204,9 @@ async def bili_playlists_cmd(msg: Message):
         lines = [f"🎵 我的B站收藏夹 ({len(playlists)} 个):"]
         for pl in playlists[:30]:
             lines.append(f"  ▎{pl['title']} ({pl.get('count', 0)}个视频)  (ID: {pl['id']})")
-        await msg.reply("\n".join(lines))
+        await msg.reply("\n".join(lines), use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:bili我的歌单] 出错: {e}")
+        logger.error(f"[命令:bili我的歌单] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取收藏夹失败，请稍后再试")
 
 @bot.command(name='bili当前账号')
@@ -1252,7 +1228,7 @@ async def bili_account_cmd(msg: Message):
             return uid[:head_len] + "****" + uid[head_len + 4:]
         display_uid = _mask_bili_uid(raw_uid) if raw_uid else "未知"
         if not user:
-            await msg.reply(f"✅ 已登录B站 (UID: {display_uid})\n昵称: {vr['uname']}")
+            await msg.reply(f"✅ 已登录B站 (UID: {display_uid})\n昵称: {vr['uname']}", type=MessageTypes.TEXT)
             return
         lines = [
             "🎬 B站账号信息",
@@ -1262,9 +1238,9 @@ async def bili_account_cmd(msg: Message):
         ]
         vip_map = {0: "无", 1: "月度大会员", 2: "年度大会员"}
         lines.append(f"  会员: {vip_map.get(user.get('vip_type', 0), '未知')}")
-        await msg.reply("\n".join(lines))
+        await msg.reply("\n".join(lines), use_quote=False, type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:bili当前账号] 出错: {e}")
+        logger.error(f"[命令:bili当前账号] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取B站账号信息失败，请稍后再试")
 
 PAGE_SIZE = 20
@@ -1348,7 +1324,7 @@ async def playlist_cmd(msg: Message, page_input: str = ''):
             type=MessageTypes.TEXT,
         )
     except Exception as e:
-        logger.error(f"[命令:播放列表] 出错: {e}")
+        logger.error(f"[命令:播放列表] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 获取播放列表失败，请稍后再试")
 
 @bot.command(name='清空列表')
@@ -1373,7 +1349,7 @@ async def clear_playlist_cmd(msg: Message):
 
         await msg.reply(f"✅ 已清空播放列表（共移除 {queue_len} 首歌曲）")
     except Exception as e:
-        logger.error(f"[命令:清空列表] 出错: {e}")
+        logger.error(f"[命令:清空列表] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 清空播放列表失败，请稍后再试")
 
 @bot.command(name='播放第')
@@ -1423,9 +1399,9 @@ async def play_index_cmd(msg: Message, index_input: str = ''):
         player = kookvoice.Player(ch)
         player.skip()
 
-        await msg.reply(f"⏭️ 已切至第 {target} 首: **{song_name}**")
+        await msg.reply(f"⏭️ 已切至第 {target} 首: {song_name}", type=MessageTypes.TEXT)
     except Exception as e:
-        logger.error(f"[命令:播放第] 出错: {e}")
+        logger.error(f"[命令:播放第] 出错: {type(e).__name__}")
         await msg.reply("⚠️ 切换失败，请稍后再试")
 
 @bot.command(name='帮助')
@@ -1477,7 +1453,7 @@ async def version_cmd(msg: Message):
         logger.info(f"[命令:版本信息] 用户={msg.author_id}")
         await msg.reply(f"**KOOK 音乐机器人**\n当前构建: {APP_VERSION}")
     except Exception as e:
-        logger.error(f"[命令:版本信息] 出错: {e}")
+        logger.error(f"[命令:版本信息] 出错: {type(e).__name__}")
         await msg.reply("当前构建信息不可用")
 
 # 启动异步事件循环
@@ -1533,8 +1509,8 @@ def start_bot_loop():
         logger.error("[机器人] bot.start() 意外返回，交由看门狗恢复")
 
     except Exception as e:
-        logger.error(f"[机器人] 启动异常: {str(e)}")
-        runtime_health.mark_bot_state("failed", str(e))
+        logger.error("[机器人] 启动异常: %s", type(e).__name__)
+        runtime_health.mark_bot_state("failed", type(e).__name__)
     finally:
         _shutdown_loop()
         try:
@@ -1569,39 +1545,7 @@ def _start_bot_thread_once():
         _bot_thread.start()
         return _bot_thread
 
-def create_app():
-    if not app.config.get('_ROUTES_REGISTERED'):
-        # 注册路由
-        register_routes(app, bot, socketio if socketio_available else None)
-        register_account_routes(app)
-
-        # 注册QQ音乐账号路由
-        try:
-            from .qq_account_api import register_qq_account_routes
-        except ImportError:
-            from qq_account_api import register_qq_account_routes
-        register_qq_account_routes(app)
-
-        # 注册B站账号路由
-        try:
-            from .bili_account_api import register_bili_account_routes
-        except ImportError:
-            from bili_account_api import register_bili_account_routes
-        register_bili_account_routes(app)
-
-        try:
-            from .api import api_bp
-        except ImportError:
-            from api import api_bp
-        app.register_blueprint(api_bp, url_prefix='/api')
-        app.config['_ROUTES_REGISTERED'] = True
-
-    app.extensions['kook_bot'] = bot
-    _start_bot_thread_once()
-    return app
-
 # 测试路由
-@app.route('/api/debug')
 def debug():
     try:
         health = runtime_health.snapshot()
@@ -1634,12 +1578,49 @@ def debug():
             "token_valid": bool(BOT_TOKEN),
             "ffmpeg_path": os.path.exists(FFMPEG_PATH)
         })
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)})
+    except Exception:
+        logger.exception("获取调试状态失败")
+        return jsonify({"status": "error", "error": "无法获取调试状态"}), 500
+
+
+def healthz():
+    return jsonify({"status": "ok"})
+
+
+def create_app(start_bot=True):
+    """创建完整的 Flask 应用；模块不再暴露未安装鉴权的全局 app。"""
+    application = Flask(__name__)
+    application.config['SECRET_KEY'] = SECRET_KEY
+    application.config['MAX_CONTENT_LENGTH'] = MAX_REQUEST_BYTES
+    application.before_request(_update_heartbeat)
+
+    register_routes(application, bot)
+    register_account_routes(application)
+
+    try:
+        from .qq_account_api import register_qq_account_routes
+    except ImportError:
+        from qq_account_api import register_qq_account_routes
+    register_qq_account_routes(application, start_maintenance=start_bot)
+
+    try:
+        from .bili_account_api import register_bili_account_routes
+    except ImportError:
+        from bili_account_api import register_bili_account_routes
+    register_bili_account_routes(application)
+
+    application.add_url_rule('/api/debug', 'debug', debug, methods=['GET'])
+    application.add_url_rule('/healthz', 'healthz', healthz, methods=['GET'])
+
+    try:
+        from .api import api_bp
+    except ImportError:
+        from api import api_bp
+    application.register_blueprint(api_bp, url_prefix='/api')
+    application.extensions['kook_bot'] = bot
+    if start_bot:
+        _start_bot_thread_once()
+    return application
 
 if __name__ == '__main__':
-    application = create_app()
-    if socketio_available and socketio:
-        socketio.run(application, host=HOST, port=PORT, debug=DEBUG, log_output=False)
-    else:
-        application.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)
+    raise SystemExit("请通过 python run.py 启动完整服务")

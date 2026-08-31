@@ -4,9 +4,9 @@
 
 项目现在具备本地账号、SQLite Session、Role/Scope、CSRF 和登录失败限速，因此 Web 控制面不再是“任何能访问端口的人都天然获得全部权限”。
 
-但它仍然是单实例自托管控制服务，而不是面向不受信任多租户的 SaaS。控制台可以控制 KOOK 语音频道、修改队列、管理音乐账号、读取/清空日志、执行进程清理，并仍保留 Web shell 命令入口。因此生产部署必须同时依赖应用鉴权、最小网络暴露、TLS、主机权限和秘密管理。
+但它仍然是单实例自托管控制服务，而不是面向不受信任多租户的 SaaS。控制台可以控制 KOOK 语音频道、修改队列、管理音乐账号、读取/清空日志和执行进程清理。因此生产部署必须同时依赖应用鉴权、最小网络暴露、TLS、主机权限和秘密管理。项目不提供远程 shell 或任意命令执行能力。
 
-鉴权实现详见 [authentication.md](authentication.md)。
+鉴权实现详见 [authentication.md](authentication.md)。本分支深度审计的问题矩阵、具体修法、兼容性变化与验证证据见 [security-hardening.md](security-hardening.md)。
 
 ## 网络暴露
 
@@ -18,9 +18,9 @@ AUTH_COOKIE_SECURE=true
 DEBUG=False
 ```
 
-由受信任的 HTTPS 反向代理暴露 Web。网易云 3000 与 QQ 3200 只允许本机 Python 应用访问，不应映射公网。
+由受信任的 HTTPS 反向代理暴露 Web。网易云 18474 与 QQ 18475 只允许本机 Python 应用访问，不应映射公网。
 
-不要把 Flask 开发服务器、3000、3200 直接暴露到互联网。若需要跨公网访问，应同时使用：
+不要把 Flask 开发服务器、18474、18475 直接暴露到互联网。若需要跨公网访问，应同时使用：
 
 - HTTPS；
 - 应用内账号鉴权；
@@ -92,6 +92,8 @@ session
 - QQ refresh token、refresh key、musickey、access token 按登录凭据处理；
 - 不把 SQLite 数据库上传到公开问题单。
 
+Linux 运行时会将认证数据库目录收紧为 `0700`，并以 `0600` 原子写入凭据文件和运行日志。迁移或人工复制后仍需重新核对所有者与权限；Windows 则依赖服务账号及目录 ACL 隔离。
+
 ## 仓库秘密扫描
 
 仓库根目录执行：
@@ -121,41 +123,19 @@ CI 使用完整 Git 历史检出，并扫描：
 
 “从最新提交删除”不能让已泄漏秘密重新安全。
 
-## Web 终端接口
+## 运行日志接口
 
-`POST /api/terminal/command` 当前已经受：
+`GET /api/terminal/output` 仅供管理员读取运行日志的增量内容，不接受命令参数，也不创建或执行子进程。日志可能包含内部资源标识、错误上下文或第三方响应片段，因此仍必须遵守管理员鉴权、最小网络暴露和日志脱敏要求。
 
-- Admin Role；
-- 有效 Session；
-- CSRF；
-
-保护，但底层仍然是：
-
-```text
-首命令名单 + shell=True + 完整字符串
-```
-
-这意味着首词白名单不能可靠阻止 shell 元字符、管道、重定向和组合语法。只要管理员 Session 被盗、浏览器环境被攻陷或将来鉴权出现绕过，该接口就是直接远程命令执行边界。
-
-建议优先级 P0：
-
-- 最优：删除 Web 命令执行能力；或
-- 改为固定命令 ID → 固定参数数组；
-- `subprocess.run(..., shell=False)`；
-- 明确每个参数的类型和范围；
-- 单独记录审计。
-
-不要把“只在 UI 隐藏按钮”视为安全控制。
-
-KOOK `/cmd` 也执行 shell 字符串，但额外受 `CMD_ALLOWUSER` 控制；该列表留空时无人可执行。不要把普通音乐命令权限自动扩展到 `/cmd`。
+项目已取消 Web 远程命令执行能力，也不再注册 KOOK `/cmd` 指令。新增运维能力必须使用明确的服务端动作和参数校验，不能恢复通用 shell 入口。
 
 ## Bot 授权
 
 Web Role/Scope 与 Bot 白名单互不替代。
 
-`ALLOWGROUP`、`ALLOWCHANNEL`、`ALLOWUSER` 分别限制 Bot 命令服务器、频道和用户；多个维度同时配置时按交集生效。
+`ALLOWGROUP`、`ALLOWCHANNEL`、`ALLOWUSER` 分别限制 Bot 命令服务器、频道和用户；多个维度同时配置时按交集生效。三个白名单全部为空时默认拒绝所有 Bot 指令；只有明确设置 `BOT_ALLOW_UNRESTRICTED=true` 才允许所有 KOOK 用户控制 Bot。
 
-`CMD_ALLOWUSER` 是 `/cmd` 的独立强权限名单。
+`/wy` 与 `/qq` 只接受歌曲名搜索，不接受任意 HTTP(S) 媒体直链。Node 音乐 API 固定监听 `127.0.0.1`，不得直接暴露到局域网或公网。
 
 管理员应使用最小必要范围并定期清理失效 ID。
 
@@ -180,21 +160,10 @@ Referrer-Policy: same-origin
 Permissions-Policy: camera=(), microphone=(), geolocation=()
 ```
 
-## Socket.IO
-
-当前 Socket.IO 在 connect 时校验 Session 和首次改密状态。
-
-如果后续增加：
-
-- 敏感播放控制事件；
-- 用户私有状态；
-- 按 Guild/Channel 房间广播；
-
-必须在每个事件/加入房间时执行 Role/Scope 校验。只验证 connect 不足以实现资源级隔离。
-
 ## 进程与媒体
 
 - 签名播放 URL 作为参数数组传给 FFmpeg，不经过 shell。
+- 播放器拒绝内嵌凭据、非 HTTP(S)、本机、私有、链路本地和保留字面 IP；生产环境仍应用网络 egress policy 阻断 DNS 重绑定后的内网访问。
 - 端口清理必须验证 PID、命令行和目录归属。
 - 不批量结束同机所有 Node、Python 或 FFmpeg。
 - Node API 使用系统全局运行代码，用户 Cookie 留在平台 `Cookie/`。

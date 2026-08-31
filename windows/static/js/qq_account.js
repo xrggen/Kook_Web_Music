@@ -1,3 +1,17 @@
+function qqSafeImageUrl(value) {
+    try {
+        const url = new URL(String(value || ''), window.location.origin);
+        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function qqSafeQrImage(value) {
+    const text = String(value || '');
+    return text.length <= 1400000 && /^data:image\/png;base64,[A-Za-z0-9+/=\s]+$/.test(text) ? text : '';
+}
+
 class QQAccountManager {
     constructor() {
         this.qrData = {};
@@ -11,6 +25,7 @@ class QQAccountManager {
     }
 
     bindEvents() {
+        $('#qq-profile-avatar').on('error', function() { $(this).hide(); });
         $('#qq-qr-refresh-btn').on('click', () => this.fetchQRCode());
         $('#qq-cookie-save-btn').on('click', () => this.saveCookie());
         $('#qq-logout-btn').on('click', () => this.logout());
@@ -84,7 +99,8 @@ class QQAccountManager {
             const data = await resp.json();
             if (data.code === 200) {
                 if (data.avatar) {
-                    $('#qq-profile-avatar').attr('src', data.avatar).show();
+                    const avatar = qqSafeImageUrl(data.avatar);
+                    if (avatar) $('#qq-profile-avatar').attr('src', avatar).show();
                 }
                 $('#qq-profile-nickname').text(data.nickname || 'QQ用户');
                 $('#qq-uin-display').text(data.uin || '');
@@ -106,22 +122,29 @@ class QQAccountManager {
                     $('#qq-playlist-grid').html('<div class="col-12 text-center text-muted py-4">暂无歌单</div>');
                     return;
                 }
-                let html = '';
+                const grid = $('#qq-playlist-grid').empty();
                 list.forEach(pl => {
-                    const name = pl.name || '未知歌单';
-                    html += `<div class="col-md-4 col-lg-3">
-                        <div class="card h-100" style="cursor:pointer"
-                             onclick="window.open('https://y.qq.com/n/ryqq/playlist/${pl.id}','_blank')">
-                            <img src="${pl.cover || ''}" class="card-img-top" alt="${name}"
-                                 onerror="this.style.display='none'">
-                            <div class="card-body p-2">
-                                <div class="fw-bold small text-truncate" title="${name}">${name}</div>
-                                <div class="text-muted" style="font-size:.75rem">${pl.trackCount||0}首 · ${(pl.playCount||0).toLocaleString()}次</div>
-                            </div>
-                        </div>
-                    </div>`;
+                    const name = String(pl.name || '未知歌单');
+                    const targetUrl = `https://y.qq.com/n/ryqq/playlist/${encodeURIComponent(String(pl.id || ''))}`;
+                    const card = $('<div>', { class: 'card h-100', role: 'link', tabindex: 0 })
+                        .css('cursor', 'pointer')
+                        .on('click keydown', event => {
+                            if (event.type === 'click' || event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                window.open(targetUrl, '_blank', 'noopener,noreferrer');
+                            }
+                        });
+                    const cover = qqSafeImageUrl(pl.cover);
+                    if (cover) {
+                        card.append($('<img>', { class: 'card-img-top', alt: name }).attr('src', cover).on('error', function() { $(this).hide(); }));
+                    }
+                    card.append(
+                        $('<div>', { class: 'card-body p-2' })
+                            .append($('<div>', { class: 'fw-bold small text-truncate', title: name }).text(name))
+                            .append($('<div>', { class: 'text-muted' }).css('font-size', '.75rem').text(`${Number(pl.trackCount) || 0}首 · ${(Number(pl.playCount) || 0).toLocaleString()}次`))
+                    );
+                    grid.append($('<div>', { class: 'col-md-4 col-lg-3' }).append(card));
                 });
-                $('#qq-playlist-grid').html(html);
             }
         } catch (e) {
             console.error('QQ歌单加载失败:', e);
@@ -138,8 +161,9 @@ class QQAccountManager {
         try {
             const resp = await fetch('/api/qq/account/qr/create', { method: 'POST' });
             const data = await resp.json();
-            if (data.qrcode) {
-                $('#qq-qr-image').attr('src', data.qrcode).show();
+            const qrImage = qqSafeQrImage(data.qrcode);
+            if (qrImage) {
+                $('#qq-qr-image').attr('src', qrImage).show();
                 $('#qq-qr-loading').hide();
                 this.qrData = { ptqrtoken: data.ptqrtoken, qrsig: data.qrsig };
                 this.startQRPolling();
@@ -205,7 +229,7 @@ class QQAccountManager {
                 this.showToast(`QQ音乐Cookie已保存${renewalText}`, 'success');
                 this.checkLoginStatus();
             } else {
-                $('#qq-cookie-save-msg').html('<span class="text-danger">' + (data.error || '保存失败') + '</span>');
+                $('#qq-cookie-save-msg').empty().append($('<span>', { class: 'text-danger' }).text(data.error || '保存失败'));
             }
         } catch (e) {
             $('#qq-cookie-save-msg').html('<span class="text-danger">网络异常</span>');

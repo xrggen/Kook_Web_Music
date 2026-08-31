@@ -11,13 +11,13 @@ cd windows
 .\.venv\Scripts\python.exe run.py
 ```
 
-首次安装请先阅读根目录 [Windows 运行教程](../Windows运行教程.md)；完整配置、迁移、升级和验证流程见 [部署指南](../docs/deployment.md)。
+首次安装请先阅读根目录 [Windows 运行教程](../Windows运行教程.md)；完整配置、迁移、升级和验证流程见 [部署指南](../docs/deployment.md)，安全兼容性变化见 [修复基线](../docs/security-hardening.md)。
 
 ## Windows 差异
 
 - 优先使用 `ffmpeg/bin/ffmpeg.exe` 与 `ffprobe.exe`，缺失时从系统 PATH 解析。
 - `run.py` 从系统 PATH 查找 Node.js 20+，并从 `npm root --global` 加载固定的网易云和 QQ API 包。
-- 3000、3200 的残留进程清理会检查端口和进程归属；不要手工批量结束所有 Node 进程。
+- 18474、18475 的残留进程清理会检查端口和进程归属；不要手工批量结束所有 Node 进程。
 - `/monitor` 不是 Windows 页面，访问时返回 404。
 
 ## 本地数据

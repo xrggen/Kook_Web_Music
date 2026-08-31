@@ -49,7 +49,7 @@ def get_stats():
             'ffmpeg_status': ffmpeg_status
         })
     except Exception as e:
-        logger.error(f"获取统计数据异常: {e}")
+        logger.error(f"获取统计数据异常: {type(e).__name__}")
         return jsonify({
             'active_guilds': 0,
             'playing_songs': 0,

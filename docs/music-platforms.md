@@ -4,8 +4,8 @@
 
 | 平台 | 数据与播放入口 | 登录态 | 本地服务 |
 |---|---|---|---|
-| 网易云音乐 | Python 适配器调用 NeteaseCloudMusicApi | `Cookie/cookie.txt` | 系统 Node，全局包，3000 |
-| QQ 音乐 | qq-music-api 与 Python 签名接口 | `qq_cookie.txt` + `qq_credential.json` | 系统 Node，全局包，3200 |
+| 网易云音乐 | Python 适配器调用 NeteaseCloudMusicApi | `Cookie/cookie.txt` | 系统 Node，全局包，18474 |
+| QQ 音乐 | qq-music-api 与 Python 签名接口 | `qq_cookie.txt` + `qq_credential.json` | 系统 Node，全局包，18475 |
 | Bilibili | Python 直连 REST 与 DASH | `Cookie/bili_cookie.txt` | 无 |
 
 三平台共用搜索、队列和播放器模型，但保留各自的协议与凭据生命周期。系统全局 Node 包只提供 API 运行代码，不保存项目用户 Cookie。
@@ -16,7 +16,7 @@
 
 歌单条目先以 `PLAYLIST_SONG` 标记入队，接近播放时按批次解析 URL，避免一次性请求全部歌曲。
 
-本地 API 默认由 `run.py` 在 3000 端口启动。启动失败时可使用 `MUSIC_API_BASE` 指定的地址，但生产环境不应依赖来源不明的公网代理。
+本地 API 由 `run.py` 在 18474 端口启动，并固定通过 `127.0.0.1` 访问。启动失败时网易云功能保持不可用，不会把 Cookie 或请求回退到远程代理。
 
 ## QQ 音乐
 

@@ -52,8 +52,8 @@ When changing a shared file, update both platform copies in the same task. Keep 
 ## Security
 
 - Never read, print, or commit real `.env`, Cookie, token, credential, or signed media URL values.
-- `POST /api/terminal/command` and KOOK `/cmd` are shell execution boundaries.
-- Do not expose ports 3000, 3200, or an unauthenticated 5000 to the public internet.
+- Remote shell execution and the KOOK `/cmd` command are intentionally removed.
+- Keep ports 18474/18475 bound to localhost; do not expose the Web port 18473 without an authenticated TLS proxy.
 - Validate process ownership before stopping port occupants.
 
 Run `python scripts/check_secrets.py` before publishing.

@@ -1,12 +1,12 @@
 # 工程 Handoff
 
-生成日期：2026-08-29
+生成日期：2026-08-31
 
 工作分支：`refactor/desktop-ui-v2`
 
-最近一次完整验证的实现基线：`823141b01e0f26fb6786481482bb74c8a061496c`（`feat(auth): add SQLite web control-plane authentication`）。本文描述该实现及其后的文档状态；接手时应先读取当前分支 HEAD，而不是把此 SHA 当作永久最新版本。
+本文以当前分支工作树为准；接手时先读取当前分支 HEAD、工作区差异和部署配置，不把历史提交当作运行时配置依据。
 
-> 安全约束：本文以及仓库其他文档不得记录真实 Bot Token、Cookie、Credential、Session Token、CSRF Token、管理员明文密码或签名媒体 URL。Bootstrap 管理员的初始明文密码已通过实现时的对话渠道交付，不进入 Git。
+> 安全约束：本文以及仓库其他文档不得记录真实 Bot Token、Cookie、Credential、Session Token、CSRF Token、管理员明文密码或签名媒体 URL。Bootstrap 管理员初始密码只能通过部署 Secret 或受限本地凭据文件提供，不进入 Git。
 
 ## 1. 当前系统状态
 
@@ -35,13 +35,7 @@ Windows 是共享实现的权威主线；`scripts/check_platform_sync.py` 要求
 
 第三方依赖作者邮箱、历史教程示例值和 npm/yarn lockfile 高熵串被归类为隐私/启发式告警，不作为凭据失败。扫描输出只报告类型与位置，不回显匹配值。
 
-实现基线对应的 GitHub Actions Run `33241568022`（Run #74）最终为 `success`：
-
-- 全历史秘密扫描：通过；
-- Windows/Ubuntu 共享文件同步：通过；
-- Python compile：通过；
-- Ubuntu 全量 `test_*.py`：通过；
-- Windows 全量 `test_*.py`：通过。
+发布前由 CI 或本地执行秘密扫描、平台同步、Python 编译和双平台单元测试；结果以当前提交和当前运行环境为准。
 
 ### 2.2 Web 控制面鉴权
 
@@ -62,8 +56,25 @@ Windows 是共享实现的权威主线；`scripts/check_platform_sync.py` 要求
 - `auth_version` 驱动的旧 Session 立即失效；
 - 审计日志；
 - 安全响应头；
-- Socket.IO 连接时的登录状态检查；
 - 桌面/移动共享登录、改密、用户管理 UI。
+
+### 2.3 深度审计修复基线
+
+本分支已完成授权资源绑定、应用工厂、管理员并发不变量、Bot 默认授权、媒体 URL、第三方重定向、请求/队列上限、凭据原子写入、DOM XSS、日志脱敏和系统 Node 收缩等修复。Web 与 KOOK Bot 的通用命令执行能力以及 `/cmd` 已取消。
+
+完整问题矩阵、代码级修法、部署兼容性与后续约束集中记录在 [security-hardening.md](security-hardening.md)，不要在 Handoff 中复制一套容易失真的实现细节。
+
+### 2.4 最近自动化验证
+
+2026-08-31 由独立 `luna_worker` 在未修改工作树的前提下完成：
+
+- Windows unittest：57/57；
+- Ubuntu unittest：57/57；
+- Python 双平台编译：通过；
+- 平台同步：通过；
+- `git diff --check`：通过。
+
+上述 114 个测试结果不替代第三方平台在线验证、生产网络策略或 Git 全历史秘密扫描。
 
 ## 3. Bootstrap 管理员
 
@@ -75,7 +86,7 @@ Windows 是共享实现的权威主线；`scripts/check_platform_sync.py` 要求
 - `enabled=1`；
 - `must_change_password=1`。
 
-初始明文密码**不在仓库中**；当前对话已将其交付给项目所有者。代码只包含与该一次性初始密码对应的 PBKDF2-SHA256 Hash。
+初始明文密码**不在仓库中**。可通过 `INITIAL_ADMIN_PASSWORD` 注入；留空时首次启动生成 `INITIAL_ADMIN_CREDENTIAL_PATH` 指向的受限凭据文件（默认 `data/bootstrap-admin.json`），首次改密成功后自动删除。数据库只保存 PBKDF2-SHA256 Hash。
 
 首次成功登录后，只允许访问改密、注销和 Session 状态；其他页面会跳转到 `/change-password`，API 返回 `428`。改密成功会提升 `auth_version`、撤销旧 Session，并重新签发 Session。
 
@@ -181,34 +192,20 @@ AUTH_TRUST_PROXY_HEADERS=true
 4. 检查 `.env` 的 `SECRET_KEY` 和 `AUTH_*`；
 5. 启动应用；
 6. 访问 `/login`；
-7. 使用项目所有者安全保存的 Bootstrap 凭据登录；
+7. 从部署 Secret 或受限凭据文件读取 Bootstrap 凭据并登录；
 8. 完成强制改密；
 9. 创建第二个管理员作为恢复路径；
 10. 再创建普通用户并验证 Scope；
 11. 验证账号页、系统页只有管理员可进入；
 12. 验证 Windows/Ubuntu CI。
 
-生产环境应令 Flask 只监听回环地址并由 HTTPS 反向代理暴露；3000/3200 绝不能直接暴露公网。
+生产环境应令 Flask 只监听回环地址并由 HTTPS 反向代理暴露；18474/18475 绝不能直接暴露公网。
 
-## 9. 已知风险与建议后续工作
+## 9. 当前安全边界与后续工作
 
-以下不是本轮未完成的故障，而是接手后优先级较高的硬化项：
+当前 Web 控制面不提供远程 shell 命令执行能力，KOOK `/cmd` 指令也已取消。`/api/terminal/output` 仅返回管理员可读的运行日志增量。
 
-### P0：移除 Web shell 边界
-
-`POST /api/terminal/command` 目前虽然已被管理员鉴权和 CSRF 保护，但底层仍是“首词白名单 + `shell=True`”。这仍然是高危远程命令执行边界。建议改成固定命令 ID → 参数数组映射并使用 `shell=False`，或彻底删除 Web 终端执行能力。
-
-### P1：Bootstrap Secret 生命周期
-
-当前源码保存 Bootstrap 初始密码的强哈希，明文不在 Git。更成熟的首次部署模型可以改为：首次启动生成一次性密码写入受限本地文件/控制台，或从部署 Secret 注入，完成初始化后不再依赖源码内固定 Hash。
-
-### P1：正式 Schema Migration
-
-当前 Schema 版本为 1，初始化主要依靠 `CREATE TABLE/INDEX IF NOT EXISTS`。未来新增字段/索引前应实现按版本顺序执行、可验证的迁移函数，并在升级/回滚文档中明确兼容性。
-
-### P1：Socket.IO Scope 复核
-
-当前 Socket.IO 在 connect 时验证 Session 和首次改密状态。若以后通过 Socket.IO 发送敏感播放状态、控制事件或按房间推送数据，应对 `join_room`/事件处理增加与 HTTP 相同的 Role/Scope 校验，不能只依赖连接时登录。
+Bootstrap 密码支持部署 Secret 注入或首次启动生成受限本地凭据文件；首次改密成功后凭据文件会被删除。Schema 使用顺序化版本迁移，升级前仍应备份 `data/`。
 
 ### P1：管理员恢复流程
 

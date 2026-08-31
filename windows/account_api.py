@@ -5,19 +5,141 @@ import logging
 import requests
 from flask import jsonify, request, render_template
 
+try:
+    from .config import MUSIC_API_BASE
+    from .secure_storage import secure_read_text, secure_write_text
+except ImportError:
+    from config import MUSIC_API_BASE
+    from secure_storage import secure_read_text, secure_write_text
+
 logger = logging.getLogger(__name__)
 
-MUSIC_API_BASE = "http://localhost:3000"
 COOKIE_TXT_PATH = os.path.join(os.path.dirname(__file__), "Cookie", "cookie.txt")
 COOKIE_JSON_PATH = os.path.join(os.path.dirname(__file__), "Cookie", "cookies.json")
+MAX_COOKIE_CHARS = 64 * 1024
+_SENSITIVE_RESPONSE_KEYS = frozenset({
+    "cookie",
+    "cookies",
+    "set_cookie",
+    "token",
+    "access_token",
+    "accesstoken",
+    "access_key",
+    "accesskey",
+    "refresh_token",
+    "refreshtoken",
+    "refresh_key",
+    "refreshkey",
+    "session",
+    "session_id",
+    "sessionid",
+    "sessdata",
+    "csrf",
+    "csrf_token",
+    "csrftoken",
+    "__csrf",
+    "music_u",
+    "music_a",
+    "musickey",
+    "music_key",
+    "qqmusic_key",
+    "qm_keyst",
+    "authorization",
+    "password",
+    "secret",
+    "client_secret",
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "login_cookie",
+    "user_cookie",
+    "oauth_token",
+    "nmtid",
+    "jessionid",
+    "jct",
+})
+MAX_ACCOUNT_UID_LENGTH = 32
+MAX_ACCOUNT_PAGE_LIMIT = 100
+MAX_ACCOUNT_PAGE_OFFSET = 1_000_000
+
+
+def _single_query_value(name):
+    values = request.args.getlist(name)
+    if len(values) > 1:
+        raise ValueError(f"{name}不允许重复")
+    return values[0] if values else None
+
+
+def _parse_account_uid():
+    value = _single_query_value("uid")
+    if value in (None, ""):
+        raise ValueError("缺少uid参数")
+    if (
+        len(value) > MAX_ACCOUNT_UID_LENGTH
+        or not value.isascii()
+        or not value.isdigit()
+        or int(value) <= 0
+    ):
+        raise ValueError("uid参数格式无效")
+    return value
+
+
+def _parse_account_page_arg(name, default, minimum, maximum):
+    value = _single_query_value(name)
+    if value is None:
+        return default
+    if not value or len(value) > 12 or not value.isascii() or not value.isdigit():
+        raise ValueError(f"{name}参数格式无效")
+    parsed = int(value)
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f"{name}参数超出允许范围")
+    return parsed
+
+
+def _sanitize_external_payload(value):
+    """Remove login credentials from data returned by the local Node API."""
+    if isinstance(value, dict):
+        clean = {}
+        for key, item in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            if normalized in _SENSITIVE_RESPONSE_KEYS:
+                continue
+            clean[key] = _sanitize_external_payload(item)
+        return clean
+    if isinstance(value, list):
+        return [_sanitize_external_payload(item) for item in value]
+    return value
+
+
+def _capture_response_cookie(result):
+    if not isinstance(result, dict):
+        return
+    cookie = result.get("cookie")
+    if isinstance(cookie, str) and cookie.strip():
+        _save_cookie(cookie.strip())
+
+
+def _normalize_cookie(cookie_str):
+    if not isinstance(cookie_str, str):
+        raise ValueError("Cookie必须是字符串")
+    cookie_str = cookie_str.strip()
+    if not cookie_str:
+        raise ValueError("Cookie内容为空")
+    if len(cookie_str) > MAX_COOKIE_CHARS:
+        raise ValueError("Cookie内容过长")
+    if any(char in cookie_str for char in ("\r", "\n", "\0")):
+        raise ValueError("Cookie包含非法控制字符")
+    return cookie_str
 
 
 def _load_cookie():
     """从cookie.txt加载Cookie字符串"""
     try:
         if os.path.exists(COOKIE_TXT_PATH):
-            with open(COOKIE_TXT_PATH, "r", encoding="utf-8") as f:
-                return f.read().strip()
+            return _normalize_cookie(
+                secure_read_text(COOKIE_TXT_PATH, max_chars=MAX_COOKIE_CHARS + 1)
+            )
     except Exception:
         pass
     return ""
@@ -25,20 +147,22 @@ def _load_cookie():
 
 def _save_cookie(cookie_str):
     """保存Cookie字符串到文件"""
-    os.makedirs(os.path.dirname(COOKIE_TXT_PATH), exist_ok=True)
-    with open(COOKIE_TXT_PATH, "w", encoding="utf-8") as f:
-        f.write(cookie_str)
+    secure_write_text(COOKIE_TXT_PATH, _normalize_cookie(cookie_str))
 
 
 def _clear_cookie():
     """清除Cookie文件"""
-    try:
-        if os.path.exists(COOKIE_TXT_PATH):
-            os.remove(COOKIE_TXT_PATH)
-        if os.path.exists(COOKIE_JSON_PATH):
-            os.remove(COOKIE_JSON_PATH)
-    except Exception:
-        pass
+    failures = 0
+    for path in (COOKIE_TXT_PATH, COOKIE_JSON_PATH):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            failures += 1
+            logger.error("[账号API] 删除登录凭据失败: %s", type(exc).__name__)
+    if failures:
+        raise OSError("未能完整删除网易云登录凭据")
 
 
 def _merge_save_cookies(resp_cookies):
@@ -78,17 +202,19 @@ def _api_get(path, **params):
     url = f"{MUSIC_API_BASE}{path}"
     logger.info(f"[账号API] GET {url}")
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=15)
+        r = requests.get(url, params=params, headers=headers, timeout=15, allow_redirects=False)
         result = r.json()
-        result["_http_status"] = r.status_code
+        if not isinstance(result, dict):
+            raise ValueError("unexpected local API response")
         code = result.get("code", "?")
         logger.info(f"[账号API] 状态={r.status_code} code={code}")
         if r.cookies:
             _merge_save_cookies(r.cookies)
-        return result
+        _capture_response_cookie(result)
+        return _sanitize_external_payload(result)
     except Exception as e:
-        logger.error(f"[账号API] GET {path} 失败: {e}")
-        return {"code": -1, "message": str(e)}
+        logger.error("[账号API] GET %s 失败: %s", path, type(e).__name__)
+        return {"code": -1, "message": "本地音乐API请求失败"}
 
 
 def _api_post(path, data=None):
@@ -103,17 +229,19 @@ def _api_post(path, data=None):
     url = f"{MUSIC_API_BASE}{path}"
     logger.info(f"[账号API] POST {url}")
     try:
-        r = requests.post(url, data=data or {}, headers=headers, timeout=20)
+        r = requests.post(url, data=data or {}, headers=headers, timeout=20, allow_redirects=False)
         result = r.json()
-        result["_http_status"] = r.status_code
+        if not isinstance(result, dict):
+            raise ValueError("unexpected local API response")
         code = result.get("code", "?")
         logger.info(f"[账号API] 状态={r.status_code} code={code}")
         if r.cookies:
             _merge_save_cookies(r.cookies)
-        return result
+        _capture_response_cookie(result)
+        return _sanitize_external_payload(result)
     except Exception as e:
-        logger.error(f"[账号API] POST {path} 失败: {e}")
-        return {"code": -1, "message": str(e)}
+        logger.error("[账号API] POST %s 失败: %s", path, type(e).__name__)
+        return {"code": -1, "message": "本地音乐API请求失败"}
 
 
 def register_account_routes(app):
@@ -207,8 +335,8 @@ def register_account_routes(app):
                 "name": song_name,
             })
         except Exception as e:
-            logger.error("顶歌失败: %s", e)
-            return jsonify({"success": False, "error": str(e)})
+            logger.error("顶歌失败: %s", type(e).__name__)
+            return jsonify({"success": False, "error": "调整播放队列失败"}), 500
 
     @app.route("/api/account/status")
     def account_status():
@@ -220,9 +348,10 @@ def register_account_routes(app):
     @app.route("/api/account/detail")
     def account_detail():
         """获取用户详情"""
-        uid = request.args.get("uid", "")
-        if not uid:
-            return jsonify({"code": -1, "message": "缺少uid参数"})
+        try:
+            uid = _parse_account_uid()
+        except ValueError as exc:
+            return jsonify({"code": 400, "message": str(exc)}), 400
         result = _api_get(f"/user/detail", uid=uid)
         return jsonify(result)
 
@@ -241,11 +370,16 @@ def register_account_routes(app):
     @app.route("/api/account/playlists")
     def account_playlists():
         """获取用户歌单"""
-        uid = request.args.get("uid", "")
-        limit = request.args.get("limit", 30)
-        offset = request.args.get("offset", 0)
-        if not uid:
-            return jsonify({"code": -1, "message": "缺少uid参数"})
+        try:
+            uid = _parse_account_uid()
+            limit = _parse_account_page_arg(
+                "limit", 30, 1, MAX_ACCOUNT_PAGE_LIMIT
+            )
+            offset = _parse_account_page_arg(
+                "offset", 0, 0, MAX_ACCOUNT_PAGE_OFFSET
+            )
+        except ValueError as exc:
+            return jsonify({"code": 400, "message": str(exc)}), 400
         result = _api_get(f"/user/playlist", uid=uid, limit=limit, offset=offset)
         return jsonify(result)
 
@@ -278,11 +412,6 @@ def register_account_routes(app):
             return jsonify({"code": -1, "message": "缺少key参数"})
         result = _api_get("/login/qr/check", key=key,
                           timestamp=int(time.time() * 1000))
-        # 803 = 登录成功，body中可能带cookie字段
-        if result.get("code") == 803:
-            cookie_str = result.get("cookie", "")
-            if cookie_str:
-                _save_cookie(cookie_str)
         return jsonify(result)
 
     @app.route("/api/account/cellphone/captcha", methods=["POST"])
@@ -343,15 +472,21 @@ def register_account_routes(app):
     def account_logout():
         """退出登录"""
         result = _api_get("/logout")
-        _clear_cookie()
+        try:
+            _clear_cookie()
+        except OSError:
+            return jsonify({"code": 500, "message": "本地登录凭据清理失败"}), 500
         return jsonify(result)
 
     @app.route("/api/account/cookie", methods=["POST"])
     def account_save_cookie():
         """手动保存Cookie"""
         data = request.json or {}
-        cookie_str = data.get("cookie", "")
-        if cookie_str:
+        try:
+            cookie_str = _normalize_cookie(data.get("cookie"))
             _save_cookie(cookie_str)
             return jsonify({"code": 200, "message": "Cookie已保存"})
-        return jsonify({"code": -1, "message": "Cookie内容为空"})
+        except ValueError as exc:
+            return jsonify({"code": 400, "message": str(exc)}), 400
+        except OSError:
+            return jsonify({"code": 500, "message": "Cookie保存失败"}), 500

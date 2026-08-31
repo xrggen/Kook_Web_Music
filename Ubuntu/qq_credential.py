@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -13,10 +12,15 @@ import requests
 
 try:
     from .config import QQ_COOKIE_TXT_PATH, QQ_CREDENTIAL_PATH
+    from .secure_storage import secure_read_text, secure_write_text
 except ImportError:
     from config import QQ_COOKIE_TXT_PATH, QQ_CREDENTIAL_PATH
+    from secure_storage import secure_read_text, secure_write_text
 
 logger = logging.getLogger(__name__)
+MAX_COOKIE_CHARS = 64 * 1024
+MAX_CREDENTIAL_JSON_CHARS = 256 * 1024
+COOKIE_KEY_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 _STATE_LOCK = threading.RLock()
 _REFRESH_LOCK = threading.Lock()
@@ -44,21 +48,47 @@ def _refresh_window() -> int:
     return _env_int("QQ_CREDENTIAL_REFRESH_WINDOW", 86400, 3600)
 
 
+def _validate_cookie_string(cookie_str: str, allow_empty: bool = False) -> str:
+    if not isinstance(cookie_str, str):
+        raise ValueError("QQ音乐Cookie必须是字符串")
+    cookie_str = cookie_str.strip()
+    if not cookie_str and not allow_empty:
+        raise ValueError("QQ音乐Cookie不能为空")
+    if len(cookie_str) > MAX_COOKIE_CHARS:
+        raise ValueError("QQ音乐Cookie过长")
+    if any(char in cookie_str for char in ("\r", "\n", "\0")):
+        raise ValueError("QQ音乐Cookie包含非法控制字符")
+    return cookie_str
+
+
 def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
     cookies: Dict[str, str] = {}
-    for part in str(cookie_str or "").split(";"):
+    try:
+        cookie_str = _validate_cookie_string(cookie_str, allow_empty=True)
+    except ValueError:
+        return cookies
+    for part in cookie_str.split(";"):
         part = part.strip()
         if not part or "=" not in part:
             continue
         key, value = part.split("=", 1)
         key = key.strip()
-        if key:
+        if key and COOKIE_KEY_RE.fullmatch(key):
             cookies[key] = value.strip()
     return cookies
 
 
 def serialize_cookie(cookies: Dict[str, str]) -> str:
-    return "; ".join(f"{key}={value}" for key, value in cookies.items() if key)
+    parts = []
+    for key, value in cookies.items():
+        key = str(key).strip()
+        value = str(value).strip()
+        if not COOKIE_KEY_RE.fullmatch(key):
+            raise ValueError("QQ音乐Cookie键名无效")
+        if ";" in value or any(char in value for char in ("\r", "\n", "\0")):
+            raise ValueError("QQ音乐Cookie值包含非法字符")
+        parts.append(f"{key}={value}")
+    return _validate_cookie_string("; ".join(parts), allow_empty=True)
 
 
 def _first(cookies: Dict[str, str], *keys: str) -> str:
@@ -86,37 +116,24 @@ def _epoch_seconds(value: Any) -> int:
 
 def _read_text(path: str) -> str:
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except (OSError, UnicodeError):
+        return _validate_cookie_string(
+            secure_read_text(path, max_chars=MAX_COOKIE_CHARS + 1),
+            allow_empty=True,
+        )
+    except (OSError, UnicodeError, ValueError):
         return ""
 
 
 def _atomic_write_text(path: str, content: str) -> None:
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".qq-credential-", dir=directory, text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
-            handle.flush()
-            try:
-                os.fsync(handle.fileno())
-            except OSError:
-                pass
-        os.replace(temp_path, path)
-    finally:
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+    secure_write_text(path, content)
 
 
 def _load_json(path: str) -> Dict[str, Any]:
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            value = json.load(handle)
+        raw = secure_read_text(path, max_chars=MAX_CREDENTIAL_JSON_CHARS + 1)
+        if len(raw) > MAX_CREDENTIAL_JSON_CHARS:
+            return {}
+        value = json.loads(raw)
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError, UnicodeError):
         return {}
@@ -265,9 +282,7 @@ def _persist(credential: Dict[str, Any]) -> Dict[str, Any]:
 
 def save_qq_cookie(cookie_str: str, source: str = "login") -> Dict[str, Any]:
     """保存 Cookie 并提取可续期 Credential。兼容旧 cookie.txt 存储。"""
-    cookie_str = str(cookie_str or "").strip()
-    if not cookie_str:
-        raise ValueError("QQ音乐Cookie不能为空")
+    cookie_str = _validate_cookie_string(cookie_str)
     with _STATE_LOCK:
         previous = _load_json(QQ_CREDENTIAL_PATH)
         mark_refreshed = source in {"login", "manual", "refresh"}
@@ -287,8 +302,13 @@ def load_qq_credential() -> Dict[str, Any]:
         cookie_str = _read_text(QQ_COOKIE_TXT_PATH)
 
         if not cookie_str and credential.get("cookie"):
-            cookie_str = str(credential.get("cookie") or "")
-            _atomic_write_text(QQ_COOKIE_TXT_PATH, cookie_str)
+            try:
+                cookie_str = _validate_cookie_string(credential.get("cookie"))
+            except ValueError:
+                cookie_str = ""
+                credential["cookie"] = ""
+            if cookie_str:
+                _atomic_write_text(QQ_COOKIE_TXT_PATH, cookie_str)
 
         if cookie_str:
             if not credential:
@@ -311,18 +331,29 @@ def load_qq_credential() -> Dict[str, Any]:
 
 def load_qq_cookie() -> str:
     credential = load_qq_credential()
-    return str(credential.get("cookie") or _read_text(QQ_COOKIE_TXT_PATH))
+    try:
+        return _validate_cookie_string(
+            credential.get("cookie") or _read_text(QQ_COOKIE_TXT_PATH),
+            allow_empty=True,
+        )
+    except ValueError:
+        return ""
 
 
 def clear_qq_credential() -> None:
     with _STATE_LOCK:
+        failures = 0
         for path in (QQ_COOKIE_TXT_PATH, QQ_CREDENTIAL_PATH):
             try:
-                if os.path.exists(path):
-                    os.remove(path)
+                os.remove(path)
+            except FileNotFoundError:
+                continue
             except OSError as exc:
-                logger.warning("[QQ凭证] 删除 %s 失败: %s", path, exc)
+                failures += 1
+                logger.warning("[QQ凭证] 删除凭据失败: %s", type(exc).__name__)
         _invalidate_legacy_verify_cache()
+        if failures:
+            raise OSError("未能完整删除QQ音乐登录凭据")
 
 
 def _qqmusic_sign(param_str: str) -> str:
@@ -368,6 +399,7 @@ def _signed_request(host: str, payload: Dict[str, Any]) -> Dict[str, Any]:
             "Referer": "https://y.qq.com/",
         },
         timeout=(5, 15),
+        allow_redirects=False,
     )
     response.raise_for_status()
     data = response.json()
@@ -566,8 +598,11 @@ def refresh_qq_credential(reason: str = "manual") -> Dict[str, Any]:
                 logger.info("[QQ凭证] 完整 Credential 刷新成功，uin=%s reason=%s", refreshed.get("uin"), reason)
                 return refreshed
             except Exception as exc:
-                errors.append(f"credential refresh: {exc}")
-                logger.warning("[QQ凭证] 完整 Credential 刷新失败，尝试 musickey fallback: %s", exc)
+                errors.append(f"credential refresh: {type(exc).__name__}")
+                logger.warning(
+                    "[QQ凭证] 完整 Credential 刷新失败，尝试 musickey fallback: %s",
+                    type(exc).__name__,
+                )
 
         try:
             result = _legacy_refresh(credential)
@@ -575,7 +610,7 @@ def refresh_qq_credential(reason: str = "manual") -> Dict[str, Any]:
             logger.info("[QQ凭证] musickey 刷新成功，uin=%s reason=%s", refreshed.get("uin"), reason)
             return refreshed
         except Exception as exc:
-            errors.append(f"musickey refresh: {exc}")
+            errors.append(f"musickey refresh: {type(exc).__name__}")
 
         now = int(time.time())
         failed = dict(credential)
@@ -638,7 +673,11 @@ def ensure_qq_credential(force_refresh: bool = False, reason: str = "request") -
             status.update({"need_relogin": False, "message": "QQ音乐凭证已自动续期"})
             return status
         except Exception as exc:
-            logger.warning("[QQ凭证] 自动续期失败 reason=%s: %s", reason, exc)
+            logger.warning(
+                "[QQ凭证] 自动续期失败 reason=%s: %s",
+                reason,
+                type(exc).__name__,
+            )
             credential = load_qq_credential()
             status = _credential_status(credential)
             # 刷新失败不立即注销仍未到期的旧凭证；网络抖动不能触发误登出。

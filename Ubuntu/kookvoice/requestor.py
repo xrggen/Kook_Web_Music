@@ -17,11 +17,16 @@ class VoiceRequestor:
 
     async def request(self, method, api, **kwargs):
         session = await self._get_session()
+        # 语音 API 只允许固定的 KOOK 端点；调用方不能重新打开重定向，
+        # 避免把带 Authorization 的请求转发到非预期主机。
+        kwargs['allow_redirects'] = False
         async with session.request(
             method,
             f'https://www.kookapp.cn/api/v3/{api}',
             **kwargs,
         ) as res:
+            if 300 <= res.status < 400:
+                raise RuntimeError('KOOK语音API拒绝重定向响应')
             res.raise_for_status()
             resj = await res.json()
         if not isinstance(resj, dict):

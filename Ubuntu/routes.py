@@ -2,28 +2,118 @@ from flask import render_template, request, jsonify, abort
 import logging
 import os
 import time
-import subprocess
+import re
+from functools import wraps
 try:
     from . import kookvoice
-    from .config import BOT_TOKEN
+    from .config import BOT_TOKEN, MAX_QUEUE_TRACKS, MAX_PLAYLIST_IMPORT_CONCURRENCY
     from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, format_playlist_data, refill_playlist_queue
     from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist_urls, refill_qq_playlist_queue
     from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_all_tracks, refill_bili_playlist_queue
+    from .auth import sync_guild, sync_channel
 except ImportError:
     import kookvoice
-    from config import BOT_TOKEN
+    from config import BOT_TOKEN, MAX_QUEUE_TRACKS, MAX_PLAYLIST_IMPORT_CONCURRENCY
     from utils import search_music, get_music_url, get_playlist, get_playlist_urls, format_playlist_data, refill_playlist_queue
     from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist_urls, refill_qq_playlist_queue
     from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_all_tracks, refill_bili_playlist_queue
+    from auth import sync_guild, sync_channel
 import threading
 
 logger = logging.getLogger(__name__)
 _RUNTIME_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'debug.log')
+_PLAYLIST_IMPORT_SLOTS = threading.BoundedSemaphore(MAX_PLAYLIST_IMPORT_CONCURRENCY)
+MAX_LOG_LINES = 1000
+MAX_LOG_READ_BYTES = 1024 * 1024
+MAX_ROUTE_INPUT_LENGTH = 256
+_ALLOWED_PLATFORMS = frozenset({'wy', 'qq', 'bili'})
+_LOG_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|"
+    r"authorization|signature|sign|qrsig|ptqrtoken|sessdata|music[_-]?[ua]|"
+    r"expires?|deadline)=)[^&#\s\"']+"
+)
+_LOG_ASSIGNMENT_SECRET_RE = re.compile(
+    r"(?i)((?:cookie|set-cookie|authorization|token|access[_-]?token|"
+    r"refresh[_-]?token|signature|qrsig|ptqrtoken|sessdata|music[_-]?[ua])"
+    r"\s*[:=]\s*[\"']?)[^\s,;\"']+"
+)
+_LOG_COOKIE_PAIR_RE = re.compile(
+    r"(?i)\b(?:MUSIC_U|MUSIC_A|SESSDATA|qqmusic_key|qm_keyst|"
+    r"psrf_qq(?:refresh|access)_(?:token|key)|bili_jct)=[^;\s,\"']+"
+)
+
+
+def _redact_log_text(value, limit=MAX_LOG_READ_BYTES):
+    text = str(value or "")
+    text = _LOG_QUERY_SECRET_RE.sub(r"\1<redacted>", text)
+    text = _LOG_ASSIGNMENT_SECRET_RE.sub(r"\1<redacted>", text)
+    text = _LOG_COOKIE_PAIR_RE.sub(
+        lambda match: match.group(0).split("=", 1)[0] + "=<redacted>",
+        text,
+    )
+    return text[:limit]
+
+
+def _route_input(value, name, allow_empty=False):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f'{name}参数格式无效')
+    text = str(value).strip()
+    if (
+        (not text and not allow_empty)
+        or len(text) > MAX_ROUTE_INPUT_LENGTH
+        or any(ord(char) < 32 or ord(char) == 127 for char in text)
+    ):
+        raise ValueError(f'{name}参数格式无效')
+    return text
+
+
+def _route_error(error):
+    safe_messages = (
+        '播放队列已达到上限', '该频道没有正在播放的歌曲', '播放列表不存在',
+        '索引超出范围', '频道id不能为空', '文件不存在',
+    )
+    message = str(error)
+    if not isinstance(error, ValueError) or not message.startswith(safe_messages):
+        message = '服务器处理请求失败'
+    return jsonify({'success': False, 'error': message}), 400 if isinstance(error, ValueError) else 500
+
+
+def _limit_playlist_import(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not _PLAYLIST_IMPORT_SLOTS.acquire(blocking=False):
+            return jsonify({'success': False, 'error': '歌单导入任务已满，请稍后重试'}), 429
+        try:
+            return view(*args, **kwargs)
+        finally:
+            _PLAYLIST_IMPORT_SLOTS.release()
+    return wrapped
 
 
 def _resolve_log_path(log_type):
     # 兼容旧前端的 app/debug 两种类型，二者都指向统一的运行日志。
     return _RUNTIME_LOG_PATH if log_type in ('app', 'debug') else None
+
+
+def _read_log_tail(path, line_limit):
+    file_size = os.path.getsize(path)
+    start = max(0, file_size - MAX_LOG_READ_BYTES)
+    with open(path, 'rb') as handle:
+        handle.seek(start)
+        payload = handle.read(MAX_LOG_READ_BYTES)
+    if start and b'\n' in payload:
+        payload = payload.split(b'\n', 1)[1]
+    lines = payload.decode('utf-8', errors='replace').splitlines()
+    return lines[-line_limit:], len(lines), bool(start)
+
+
+def _truncate_private_file(path):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if os.name != 'nt':
+            os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
 
 def _find_channel_for_guild(guild_id):
     """同步查找服务器内的活跃语音频道。多频道时返回第一个但记录警告。"""
@@ -48,7 +138,14 @@ def _playback_modes_from_state(channel_state):
     }
 
 
-def register_routes(app, bot, socketio=None):
+def _queue_has_capacity(channel_id, requested):
+    snapshot = kookvoice.get_state_snapshot()
+    state = snapshot['play_list'].get(str(channel_id), {})
+    queued = len(state.get('play_list', []))
+    return queued + max(0, int(requested)) <= MAX_QUEUE_TRACKS
+
+
+def register_routes(app, bot):
     """注册所有路由"""
     
     @app.route('/')
@@ -85,12 +182,11 @@ def register_routes(app, bot, socketio=None):
                 url = 'https://www.kookapp.cn/api/v3/guild/list'
                 
                 logger.info(f"请求服务器列表API: {url}")
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, headers=headers, timeout=10, allow_redirects=False)
                 logger.info(f"服务器列表API响应状态: {response.status_code}")
                 
                 if response.status_code == 200:
                     data = response.json()
-                    logger.info(f"服务器列表API响应数据: {data}")
                     if data.get('code') == 0 and 'data' in data:
                         guilds = data['data'].get('items', [])
                         logger.info(f"获取到 {len(guilds)} 个服务器")
@@ -101,23 +197,28 @@ def register_routes(app, bot, socketio=None):
                     guilds = []
                     logger.error(f"服务器列表API HTTP错误: {response.status_code}")
             except Exception as e:
-                logger.error(f"获取服务器列表异常: {e}")
+                logger.error(f"获取服务器列表异常: {type(e).__name__}")
                 guilds = []
             
             # 格式化数据
             formatted_guilds = []
             for guild in guilds:
+                guild_id = str(guild.get('id', '')).strip()
+                if not guild_id:
+                    continue
+                guild_name = str(guild.get('name', '未知服务器'))
+                sync_guild(guild_id, guild_name)
                 formatted_guilds.append({
-                    'id': guild.get('id', ''),
-                    'name': guild.get('name', '未知服务器'),
+                    'id': guild_id,
+                    'name': guild_name,
                     'icon': guild.get('icon', ''),
                     'master_id': guild.get('master_id', '')
                 })
             
             return jsonify({'success': True, 'guilds': formatted_guilds})
         except Exception as e:
-            logger.error(f"获取服务器列表异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取服务器列表异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/channels', methods=['GET'])
     def get_channels():
@@ -134,9 +235,15 @@ def register_routes(app, bot, socketio=None):
                     'Authorization': f'Bot {BOT_TOKEN}',
                     'Content-Type': 'application/json'
                 }
-                url = f'https://www.kookapp.cn/api/v3/channel/list?guild_id={guild_id}'
-                
-                response = requests.get(url, headers=headers, timeout=10)
+                url = 'https://www.kookapp.cn/api/v3/channel/list'
+
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    params={'guild_id': guild_id},
+                    timeout=10,
+                    allow_redirects=False,
+                )
                 if response.status_code == 200:
                     data = response.json()
                     if data.get('code') == 0 and 'data' in data:
@@ -146,7 +253,7 @@ def register_routes(app, bot, socketio=None):
                 else:
                     channels = []
             except Exception as e:
-                logger.error(f"获取频道列表异常: {e}")
+                logger.error(f"获取频道列表异常: {type(e).__name__}")
                 channels = []
             
             # 格式化数据，只返回语音频道
@@ -154,16 +261,21 @@ def register_routes(app, bot, socketio=None):
             for channel in channels:
                 # 只返回语音频道 (type=2)
                 if channel.get('type') == 2:
+                    channel_id = str(channel.get('id', '')).strip()
+                    if not channel_id:
+                        continue
+                    channel_name = str(channel.get('name', '未知频道'))
+                    sync_channel(guild_id, channel_id, channel_name, 'voice')
                     formatted_channels.append({
-                        'id': channel.get('id', ''),
-                        'name': channel.get('name', '未知频道'),
+                        'id': channel_id,
+                        'name': channel_name,
                         'type': channel.get('type', 2)
                     })
             
             return jsonify({'success': True, 'channels': formatted_channels})
         except Exception as e:
-            logger.error(f"获取频道列表异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取频道列表异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/channels/active', methods=['GET'])
     def get_active_channels():
@@ -206,8 +318,8 @@ def register_routes(app, bot, socketio=None):
 
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"加入语音频道异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"加入语音频道异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/leave', methods=['POST'])
     def leave_channel():
@@ -227,8 +339,8 @@ def register_routes(app, bot, socketio=None):
             player.stop()
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"离开语音频道异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"离开语音频道异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/search', methods=['GET'])
     def search():
@@ -237,6 +349,13 @@ def register_routes(app, bot, socketio=None):
         platform = request.args.get('platform', 'wy')
         if not keyword:
             return jsonify({'success': False, 'error': '缺少keyword参数'})
+        try:
+            keyword = _route_input(keyword, 'keyword')
+            platform = _route_input(platform, 'platform')
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 400
+        if platform not in _ALLOWED_PLATFORMS:
+            return jsonify({'success': False, 'error': '不支持的平台'}), 400
 
         try:
             if platform == 'qq':
@@ -247,15 +366,15 @@ def register_routes(app, bot, socketio=None):
                 songs = search_music(keyword)
             return jsonify({'success': True, 'songs': songs})
         except Exception as e:
-            logger.error(f"搜索音乐异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"搜索音乐异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/play', methods=['POST'])
     @app.route('/api/playlist/add', methods=['POST'])
     def play_music():
         """将单曲添加到指定频道的播放列表（/api/play 保留兼容）"""
         data = request.json
-        if not data:
+        if not isinstance(data, dict) or not data:
             return jsonify({'success': False, 'error': '请求数据为空'})
 
         guild_id = data.get('guild_id')
@@ -267,6 +386,17 @@ def register_routes(app, bot, socketio=None):
 
         if not guild_id or not channel_id or not song_id:
             return jsonify({'success': False, 'error': '缺少必要参数'})
+        try:
+            song_id = _route_input(song_id, 'song_id')
+            song_name = _route_input(song_name, 'song_name', allow_empty=True)
+            artist_name = _route_input(artist_name, 'artist_name', allow_empty=True)
+            platform = _route_input(platform, 'platform')
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 400
+        if platform not in _ALLOWED_PLATFORMS:
+            return jsonify({'success': False, 'error': '不支持的平台'}), 400
+        if not _queue_has_capacity(channel_id, 1):
+            return jsonify({'success': False, 'error': f'播放队列已达到上限（{MAX_QUEUE_TRACKS} 首）'}), 409
 
         try:
             if platform == 'qq':
@@ -297,14 +427,15 @@ def register_routes(app, bot, socketio=None):
                 'message': '歌曲已添加到播放列表',
             })
         except Exception as e:
-            logger.error(f"播放音乐异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"播放音乐异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/playlist', methods=['POST'])
+    @_limit_playlist_import
     def add_playlist():
         """添加歌单"""
         data = request.json
-        if not data:
+        if not isinstance(data, dict) or not data:
             return jsonify({'success': False, 'error': '请求数据为空'})
 
         guild_id = data.get('guild_id')
@@ -314,6 +445,13 @@ def register_routes(app, bot, socketio=None):
 
         if not guild_id or not channel_id or not playlist_id:
             return jsonify({'success': False, 'error': '缺少必要参数'})
+        try:
+            playlist_id = _route_input(playlist_id, 'playlist_id')
+            platform = _route_input(platform, 'platform')
+        except ValueError as exc:
+            return jsonify({'success': False, 'error': str(exc)}), 400
+        if platform not in _ALLOWED_PLATFORMS:
+            return jsonify({'success': False, 'error': '不支持的平台'}), 400
 
         try:
             player = kookvoice.Player(channel_id, BOT_TOKEN)
@@ -322,6 +460,8 @@ def register_routes(app, bot, socketio=None):
                 songs = get_qq_playlist_urls(playlist_id)
                 if not songs:
                     return jsonify({'success': False, 'error': '歌单为空或无法获取歌单'})
+                if not _queue_has_capacity(channel_id, len(songs)):
+                    return jsonify({'success': False, 'error': f'导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）'}), 409
                 for song in songs:
                     player.add_music(song['marker'], {
                         'title': song['name'],
@@ -335,6 +475,8 @@ def register_routes(app, bot, socketio=None):
                 songs = get_bili_favorite_all_tracks(playlist_id)
                 if not songs:
                     return jsonify({'success': False, 'error': '收藏夹为空或无法获取'})
+                if not _queue_has_capacity(channel_id, len(songs)):
+                    return jsonify({'success': False, 'error': f'导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）'}), 409
                 for song in songs:
                     player.add_music(song['marker'], {
                         'title': song['name'],
@@ -349,6 +491,8 @@ def register_routes(app, bot, socketio=None):
                 songs = get_playlist_urls(playlist_id)
                 if not songs:
                     return jsonify({'success': False, 'error': '歌单为空或无法获取歌单'})
+                if not _queue_has_capacity(channel_id, len(songs)):
+                    return jsonify({'success': False, 'error': f'导入后将超过队列上限（{MAX_QUEUE_TRACKS} 首）'}), 409
                 for song in songs:
                     player.add_music(song['marker'], {
                         'title': song['name'],
@@ -362,8 +506,8 @@ def register_routes(app, bot, socketio=None):
             logger.info(f"[歌单导入] platform={platform} {len(songs)}首 预取{prefetched}首")
             return jsonify({'success': True, 'count': len(songs)})
         except Exception as e:
-            logger.error(f"添加歌单异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"添加歌单异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/skip', methods=['POST'])
     def skip_music():
@@ -383,8 +527,8 @@ def register_routes(app, bot, socketio=None):
             player.skip()
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"跳过歌曲异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"跳过歌曲异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/seek', methods=['POST'])
     def seek_music():
@@ -405,8 +549,8 @@ def register_routes(app, bot, socketio=None):
             player.seek(int(position))
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"跳转位置异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"跳转位置异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/playlist/current', methods=['GET'])
     def get_current_playlist():
@@ -437,8 +581,8 @@ def register_routes(app, bot, socketio=None):
                     'playback_modes': _playback_modes_from_state(None),
                 })
         except Exception as e:
-            logger.error(f"获取播放列表异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取播放列表异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/playlist/repeat', methods=['POST'])
     def toggle_playlist_repeat():
@@ -459,8 +603,8 @@ def register_routes(app, bot, socketio=None):
                 'playback_modes': _playback_modes_from_state(channel_state),
             })
         except Exception as e:
-            logger.error(f"切换列表循环异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"切换列表循环异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/pause', methods=['POST'])
     def pause_music():
@@ -480,8 +624,8 @@ def register_routes(app, bot, socketio=None):
             player.pause()
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"暂停播放异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"暂停播放异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/resume', methods=['POST'])
     def resume_music():
@@ -501,8 +645,8 @@ def register_routes(app, bot, socketio=None):
             player.resume()
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"继续播放异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"继续播放异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/stop', methods=['POST'])
     def stop_music():
@@ -522,8 +666,8 @@ def register_routes(app, bot, socketio=None):
             player.stop()
             return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"停止播放异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"停止播放异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/clear', methods=['POST'])
     def clear_playlist():
@@ -544,8 +688,8 @@ def register_routes(app, bot, socketio=None):
                     kookvoice.play_list[channel_id]['play_list'] = []
                 return jsonify({'success': True})
         except Exception as e:
-            logger.error(f"清空播放列表异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"清空播放列表异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/remove', methods=['POST'])
     def remove_from_playlist():
@@ -571,8 +715,8 @@ def register_routes(app, bot, socketio=None):
                     return jsonify({'success': False, 'error': '索引超出范围'})
                 return jsonify({'success': False, 'error': '播放列表不存在'})
         except Exception as e:
-            logger.error(f"移除歌曲异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"移除歌曲异常: {type(e).__name__}")
+            return _route_error(e)
     
     @app.route('/api/system/status', methods=['GET'])
     def get_system_status():
@@ -633,14 +777,15 @@ def register_routes(app, bot, socketio=None):
                 'timestamp': time.time(),
             })
         except Exception as e:
-            logger.error(f"获取系统状态异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取系统状态异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/logs', methods=['GET'])
     def get_logs():
         """获取日志信息"""
         try:
             lines = request.args.get('lines', 100, type=int)
+            lines = max(1, min(lines if lines is not None else 100, MAX_LOG_LINES))
             log_type = request.args.get('type', 'app', type=str)
 
             log_file = _resolve_log_path(log_type)
@@ -650,13 +795,11 @@ def register_routes(app, bot, socketio=None):
             if not os.path.exists(log_file):
                 return jsonify({'success': False, 'error': '日志文件不存在'})
 
-            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                all_lines = f.readlines()
-                recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            recent_lines, scanned_lines, truncated = _read_log_tail(log_file, lines)
 
             logs = []
             for line in recent_lines:
-                line = line.strip()
+                line = _redact_log_text(line.strip(), 4096)
                 if line:
                     if ' - ' in line:
                         parts = line.split(' - ', 2)
@@ -668,10 +811,17 @@ def register_routes(app, bot, socketio=None):
                     else:
                         logs.append({'timestamp': '', 'level': 'info', 'message': line, 'raw': line})
 
-            return jsonify({'success': True, 'logs': logs, 'total_lines': len(all_lines), 'returned_lines': len(logs), 'log_type': log_type})
+            return jsonify({
+                'success': True,
+                'logs': logs,
+                'total_lines': scanned_lines,
+                'returned_lines': len(logs),
+                'log_type': log_type,
+                'truncated': truncated,
+            })
         except Exception as e:
-            logger.error(f"获取日志异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取日志异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/logs/clear', methods=['POST'])
     def clear_logs():
@@ -681,12 +831,11 @@ def register_routes(app, bot, socketio=None):
             log_file = _resolve_log_path(log_type)
             if not log_file:
                 return jsonify({'success': False, 'error': '无效的日志类型'})
-            with open(log_file, 'w', encoding='utf-8') as f:
-                f.write('')
+            _truncate_private_file(log_file)
             return jsonify({'success': True, 'message': f'{log_type}日志已清空'})
         except Exception as e:
-            logger.error(f"清空日志异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"清空日志异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/system/cleanup', methods=['POST'])
     def manual_cleanup():
@@ -721,8 +870,8 @@ def register_routes(app, bot, socketio=None):
                 }
             })
         except Exception as e:
-            logger.error(f"手动清理异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"手动清理异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/system/cleanup/config', methods=['POST'])
     def update_cleanup_config():
@@ -740,49 +889,43 @@ def register_routes(app, bot, socketio=None):
                 return jsonify({'success': True, 'message': f'清理阈值已更新为 {new_threshold} 首歌曲', 'new_threshold': new_threshold})
             return jsonify({'success': False, 'error': '缺少threshold参数'})
         except Exception as e:
-            logger.error(f"更新清理配置异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"更新清理配置异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/terminal/output', methods=['GET'])
     def get_terminal_output():
         """获取终端输出（增量）"""
         try:
             last_position = request.args.get('last_position', 0, type=int)
+            last_position = max(0, last_position if last_position is not None else 0)
             log_file = _RUNTIME_LOG_PATH
             if os.path.exists(log_file):
                 file_size = os.path.getsize(log_file)
                 if file_size < last_position:
                     last_position = 0
                 output = ""
+                truncated = False
                 if file_size > last_position:
-                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        f.seek(last_position)
-                        output = f.read()
-                return jsonify({'success': True, 'output': output, 'timestamp': time.time(), 'file_size': file_size, 'last_position': last_position})
+                    read_position = last_position
+                    if file_size - read_position > MAX_LOG_READ_BYTES:
+                        read_position = file_size - MAX_LOG_READ_BYTES
+                        truncated = True
+                    with open(log_file, 'rb') as f:
+                        f.seek(read_position)
+                        output = f.read(MAX_LOG_READ_BYTES).decode('utf-8', errors='replace')
+                output = _redact_log_text(output)
+                return jsonify({
+                    'success': True,
+                    'output': output,
+                    'timestamp': time.time(),
+                    'file_size': file_size,
+                    'last_position': file_size,
+                    'truncated': truncated,
+                })
             return jsonify({'success': True, 'output': '日志文件不存在', 'timestamp': time.time(), 'file_size': 0, 'last_position': 0})
         except Exception as e:
-            logger.error(f"获取终端输出异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
-
-    @app.route('/api/terminal/command', methods=['POST'])
-    def execute_terminal_command():
-        """执行安全的终端命令"""
-        try:
-            data = request.json
-            if not data or 'command' not in data:
-                return jsonify({'success': False, 'error': '缺少命令参数'})
-            command = data['command']
-            allowed = {'ps', 'top', 'htop', 'df', 'free', 'uptime', 'whoami', 'pwd', 'ls', 'cat', 'tail', 'head', 'grep', 'find'}
-            command_base = command.split()[0] if command.split() else ''
-            if command_base not in allowed:
-                return jsonify({'success': False, 'error': f'不允许执行命令: {command_base}'})
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-            return jsonify({'success': True, 'stdout': result.stdout, 'stderr': result.stderr, 'returncode': result.returncode, 'command': command})
-        except subprocess.TimeoutExpired:
-            return jsonify({'success': False, 'error': '命令执行超时'})
-        except Exception as e:
-            logger.error(f"执行终端命令异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
+            logger.error(f"获取终端输出异常: {type(e).__name__}")
+            return _route_error(e)
 
     @app.route('/api/cache/test', methods=['POST'])
     def test_cache():
@@ -810,39 +953,15 @@ def register_routes(app, bot, socketio=None):
                         }
                         logger.info(f'测试缓存添加成功: {cache_key}')
                 except Exception as e:
-                    logger.error(f'测试缓存失败: {e}')
+                    logger.error(f'测试缓存失败: {type(e).__name__}')
 
             test_thread = threading.Thread(target=run_test_preload)
             test_thread.daemon = True
             test_thread.start()
             return jsonify({'success': True, 'message': '测试缓存已启动', 'cache_count': len(audio_cache)})
         except Exception as e:
-            logger.error(f"测试缓存异常: {e}")
-            return jsonify({'success': False, 'error': str(e)})
-
-    # 如果SocketIO可用，注册SocketIO事件
-    if socketio:
-        @socketio.on('connect')
-        def handle_connect():
-            logger.info('客户端已连接')
-
-        @socketio.on('disconnect')
-        def handle_disconnect():
-            logger.info('客户端已断开连接')
-        
-        @socketio.on('join_room')
-        def handle_join_room(data):
-            guild_id = data.get('guild_id')
-            if guild_id:
-                socketio.join_room(guild_id)
-                logger.info(f'客户端加入房间: {guild_id}')
-        
-        @socketio.on('leave_room')
-        def handle_leave_room(data):
-            guild_id = data.get('guild_id')
-            if guild_id:
-                socketio.leave_room(guild_id)
-                logger.info(f'客户端离开房间: {guild_id}')
+            logger.error(f"测试缓存异常: {type(e).__name__}")
+            return _route_error(e)
 
 # 辅助函数
 async def get_guild_list(bot):
@@ -853,7 +972,7 @@ async def get_guild_list(bot):
             return guilds["items"]
         return []
     except Exception as e:
-        logger.error(f"获取服务器列表异常: {e}")
+        logger.error(f"获取服务器列表异常: {type(e).__name__}")
         return []
 
 async def get_channel_list(bot, guild_id):
@@ -866,5 +985,5 @@ async def get_channel_list(bot, guild_id):
             return voice_channels
         return []
     except Exception as e:
-        logger.error(f"获取频道列表异常: {e}")
+        logger.error(f"获取频道列表异常: {type(e).__name__}")
         return []
