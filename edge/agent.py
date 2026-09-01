@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -55,8 +56,15 @@ class EdgeAgent:
             raise RuntimeError("EDGE_RELAY_URL is required")
         if len(self.token) < 32:
             raise RuntimeError("EDGE_AGENT_TOKEN must contain at least 32 characters")
-        if not self.relay_url.startswith(("wss://", "ws://")):
-            raise RuntimeError("EDGE_RELAY_URL must use ws:// or wss://")
+        relay = urlsplit(self.relay_url)
+        if relay.scheme not in {"ws", "wss"} or not relay.hostname:
+            raise RuntimeError("EDGE_RELAY_URL must be an absolute ws:// or wss:// URL")
+        if relay.username or relay.password or relay.query or relay.fragment:
+            raise RuntimeError(
+                "EDGE_RELAY_URL must not contain credentials, query parameters or fragments"
+            )
+        if relay.path.rstrip("/") != "/edge/v1/connect":
+            raise RuntimeError("EDGE_RELAY_URL path must be /edge/v1/connect")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
