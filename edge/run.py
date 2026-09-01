@@ -33,10 +33,16 @@ def _load_configuration(platform_dir: Path) -> None:
     local_port = os.environ.get("EDGE_LOCAL_PORT", "18473").strip() or "18473"
     os.environ["HOST"] = "127.0.0.1"
     os.environ["PORT"] = local_port
-    edge_db = os.environ.get("EDGE_LOCAL_AUTH_DATABASE_PATH", "").strip()
-    if not edge_db:
-        edge_db = str(platform_dir / "data" / "edge_internal.db")
-    os.environ["AUTH_DATABASE_PATH"] = str(Path(edge_db).expanduser().resolve())
+
+    edge_db_text = os.environ.get("EDGE_LOCAL_AUTH_DATABASE_PATH", "").strip()
+    if edge_db_text:
+        edge_db = Path(edge_db_text).expanduser()
+        if not edge_db.is_absolute():
+            edge_db = platform_dir / edge_db
+    else:
+        edge_db = platform_dir / "data" / "edge_internal.db"
+    os.environ["AUTH_DATABASE_PATH"] = str(edge_db.resolve())
+
     os.environ["INITIAL_ADMIN_USERNAME"] = "edge_local_admin"
     os.environ["INITIAL_ADMIN_PASSWORD"] = secrets.token_urlsafe(36) + "!Aa1"
     os.environ["AUTH_COOKIE_SECURE"] = "false"
