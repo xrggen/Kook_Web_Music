@@ -127,9 +127,10 @@ class RelayHub:
                 elif message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
                     break
         finally:
-            if self._connections.get(agent_id) is connection:
+            is_current = self._connections.get(agent_id) is connection
+            if is_current:
                 self._connections.pop(agent_id, None)
-            agent_registry.mark_disconnected(agent_id)
+                agent_registry.mark_disconnected(agent_id)
             for future in list(connection.pending.values()):
                 if not future.done():
                     future.set_exception(EdgeOfflineError("edge disconnected"))
@@ -153,6 +154,17 @@ class RelayHub:
                 return
             connection.boot_id = str(payload.get("boot_id", ""))[:128]
             connection.version = str(payload.get("version", ""))[:128]
+            with self._state_lock:
+                existing = self._state.get(connection.agent_id) or {}
+                old_boot_id = str(((existing.get("full") or {}).get("agent") or {}).get("boot_id", ""))
+                if connection.boot_id and old_boot_id and connection.boot_id != old_boot_id:
+                    self._state[connection.agent_id] = {
+                        "agent_id": connection.agent_id,
+                        "full": {},
+                        "runtime": {},
+                        "last_event_at": time.time(),
+                        "seq": 0,
+                    }
             agent_registry.mark_connected(connection.agent_id, version=connection.version, protocol_version=PROTOCOL_VERSION)
             await connection.ws.send_str(encode_message(new_envelope("hello_ack", payload={"agent_id": connection.agent_id, "protocol_version": PROTOCOL_VERSION, "server_time": time.time()})))
             return
