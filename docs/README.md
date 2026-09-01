@@ -1,45 +1,48 @@
 # 项目文档
 
-文档只描述当前分支已经实现的行为，不保留版本流水账。根 [README](../README.md) 只提供项目入口；完整事实与工程交接信息集中维护在本目录。
+文档只描述当前分支已经实现的行为，不保留版本流水账。根 README 只提供项目入口；工程交接信息始终维护在本目录。
 
 ## 接手入口
-
-新接手开发、审计或部署工作时，先读：
 
 1. [HANDOFF.md](HANDOFF.md)
 2. [cloud-edge-architecture.md](cloud-edge-architecture.md)
 3. [cloud-edge-deployment.md](cloud-edge-deployment.md)
 4. [authentication.md](authentication.md)
 5. [security.md](security.md)
-6. [architecture.md](architecture.md)
-7. [deployment.md](deployment.md)
+6. [operations.md](operations.md)
 
-`HANDOFF.md` 记录当前已验证实现基线、近期完成工作、关键文件、运行数据、接手顺序和已知风险。Handoff 只放在 `docs/`，不写入项目根 README。
+## 当前核心事实
+
+- 公网 Web UI 使用 HTTPS 443。
+- Edge WSS 使用独立非标准公网端口池，默认 `28470-28479`。
+- Edge 任意时刻只维持一条 Active WSS，并在网络型端口故障时自动切换。
+- Edge 保留完整 v2 本地 WebUI；Cloud/WSS 不是本地 Bot/播放能力的运行前提。
+- Edge 本地设置页可维护 Cloud 主机、WSS 端口池、Agent 身份/TLS/Token。
+- Agent Token 不通过读取 API 回显，动态配置和 Secret 留在 Edge `data/`。
+- Handoff 不写入项目根 README。
 
 ## 文档索引
 
 | 文档 | 负责内容 |
 |---|---|
-| [HANDOFF.md](HANDOFF.md) | 当前工程交接、已验证基线、关键实现、风险与推荐后续工作 |
-| [cloud-edge-architecture.md](cloud-edge-architecture.md) | 公网 Cloud / 私网 Edge 分离架构、WSS 协议、状态同步、故障模型与安全边界 |
-| [cloud-edge-deployment.md](cloud-edge-deployment.md) | Cloud/Edge 安装、反向代理、Agent Token、迁移、启动与断网验证 |
-| [security-hardening.md](security-hardening.md) | 深度审计问题、逐项修复、兼容性变化、代码位置与验证证据 |
-| [architecture.md](architecture.md) | 单机兼容模式的进程拓扑、播放会话、媒体管道、并发和恢复机制 |
-| [deployment.md](deployment.md) | Windows/Ubuntu 单机兼容模式安装、Auth/SQLite 配置、启动、升级、回滚和验证 |
-| [authentication.md](authentication.md) | Web 登录、Session、CSRF、管理员/普通用户、RBAC、Scope、SQLite IAM 与审计 |
-| [music-platforms.md](music-platforms.md) | 三平台接入方式、登录态与 QQ Credential 生命周期 |
-| [web-api.md](web-api.md) | 页面、HTTP API、鉴权状态码、Role/Scope/CSRF 调用约束 |
-| [ui.md](ui.md) | 桌面/移动共享 UI、登录/改密/用户管理、主题和前端资源职责 |
-| [operations.md](operations.md) | 日志、审计、SQLite 运维、健康检查、watchdog、备份与故障处理 |
-| [development.md](development.md) | 平台同步、Auth 开发约束、安全检查与维护规则 |
-| [security.md](security.md) | 网络、身份、凭据、RCE 边界、秘密扫描与发布安全 |
+| [HANDOFF.md](HANDOFF.md) | 当前工程交接、关键实现、运行数据、质检边界 |
+| [cloud-edge-architecture.md](cloud-edge-architecture.md) | 双控制面、WSS 端口池、Agent Supervisor、状态同步、故障与安全边界 |
+| [cloud-edge-deployment.md](cloud-edge-deployment.md) | 443 Web、28470-28479 WSS、Edge 本地 WebUI、动态配置与迁移 |
+| [security-hardening.md](security-hardening.md) | 深度审计问题、修复与验证证据 |
+| [architecture.md](architecture.md) | 单机兼容模式与播放核心 |
+| [deployment.md](deployment.md) | Windows/Ubuntu 单机兼容部署 |
+| [authentication.md](authentication.md) | 登录、Session、CSRF、Admin/User、Scope、IAM |
+| [music-platforms.md](music-platforms.md) | 网易/QQ/Bilibili 与 Credential 生命周期 |
+| [web-api.md](web-api.md) | HTTP API 与鉴权约束 |
+| [ui.md](ui.md) | 桌面/移动 UI 与主题 |
+| [operations.md](operations.md) | 日志、SQLite、健康、备份和故障处理 |
+| [development.md](development.md) | 开发与同步约束 |
+| [security.md](security.md) | 网络、身份、凭据、RCE 与秘密扫描 |
 
 ## 维护原则
 
 1. 同一个事实只在一份专题文档中完整说明，其他位置使用链接。
-2. Windows 和 Ubuntu 共用 Edge 运行时架构、配置语义和 Node 依赖；平台文档只写安装命令与系统差异。
-3. Cloud/Edge 新增服务、环境变量、持久化文件、协议 Action、页面、API、Role/Scope 或 Bot 命令时，必须更新对应专题文档。
-4. 文档不得包含真实 Token、Cookie、Credential、Session/CSRF、账号密码、频道、签名 URL、内网地址或个人推广链接。
-5. 临时密码、Bootstrap 初始密码与 Agent Token 只能通过安全交付渠道传递，不进入 Git 文档。
-6. 版本变化由 Git 提交和发布记录承载；Handoff 记录接手所需“当前状态”，不复制完整历史流水账。
-7. 根 README 不承载工程 handoff；交接始终维护在 `docs/HANDOFF.md`。
+2. Cloud/Edge 端口、环境变量、持久化文件、协议 Action、页面/API 或安全边界变化时，必须同步更新对应专题。
+3. 文档不得包含真实 Token、Cookie、Credential、Session/CSRF、账号密码、签名 URL 或其他秘密。
+4. 版本变化由 Git 提交承载；Handoff 只记录当前状态。
+5. 根 README 不承载工程 handoff。
