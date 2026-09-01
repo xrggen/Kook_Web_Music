@@ -14,6 +14,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def _cloud_path(value: str, default: Path) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return str(default.resolve())
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = CLOUD_DIR / path
+    return str(path.resolve())
+
+
 def _load_configuration() -> None:
     env_file = Path(os.environ.get("CLOUD_ENV_FILE", CLOUD_DIR / ".env")).expanduser()
     if not env_file.is_absolute():
@@ -21,8 +31,14 @@ def _load_configuration() -> None:
     load_dotenv(env_file, override=False)
     os.environ.setdefault("HOST", "127.0.0.1")
     os.environ.setdefault("PORT", "18473")
-    os.environ.setdefault("AUTH_DATABASE_PATH", str((CLOUD_DIR / "data" / "kook_music.db").resolve()))
-    os.environ.setdefault("INITIAL_ADMIN_CREDENTIAL_PATH", str((CLOUD_DIR / "data" / "bootstrap-admin.json").resolve()))
+    os.environ["AUTH_DATABASE_PATH"] = _cloud_path(
+        os.environ.get("AUTH_DATABASE_PATH", ""),
+        CLOUD_DIR / "data" / "kook_music.db",
+    )
+    os.environ["INITIAL_ADMIN_CREDENTIAL_PATH"] = _cloud_path(
+        os.environ.get("INITIAL_ADMIN_CREDENTIAL_PATH", ""),
+        CLOUD_DIR / "data" / "bootstrap-admin.json",
+    )
     os.environ.setdefault("AUTH_COOKIE_SECURE", "true")
     os.environ.setdefault("AUTH_TRUST_PROXY_HEADERS", "true")
     os.environ.setdefault("SECRET_KEY", secrets.token_urlsafe(48))
@@ -44,7 +60,13 @@ def main() -> None:
     application = create_app(hub)
     host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(os.environ.get("PORT", "18473"))
-    logging.getLogger(__name__).info("Cloud control plane listening on http://%s:%d; relay=%s:%d", host, port, relay_host, relay_port)
+    logging.getLogger(__name__).info(
+        "Cloud control plane listening on http://%s:%d; relay=%s:%d",
+        host,
+        port,
+        relay_host,
+        relay_port,
+    )
     application.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
 
 
