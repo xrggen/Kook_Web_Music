@@ -1,0 +1,8 @@
+music.example.com {
+    encode zstd gzip
+
+    @edge path /edge/v1/connect
+    reverse_proxy @edge 127.0.0.1:18476
+
+    reverse_proxy 127.0.0.1:18473
+}
