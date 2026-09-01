@@ -2,374 +2,143 @@
 
 ## 目标
 
-该架构把公网 Web 控制面与私网播放执行端彻底分离：
+本分支把公网 Web 控制面与无公网 IP 的 Edge 执行端分离，同时保留 Edge 完整本地 WebUI。
 
-- **Cloud Control Plane** 部署在有公网入口的云服务器，负责 HTTPS、页面、Web 用户、Session、RBAC/Scope、审计和 Edge 状态缓存。
-- **Edge Runtime** 部署在没有公网 IP、但允许出站访问 Internet 的环境，继续负责 KOOK Bot、音乐平台凭据、Node API、PlayHandler、FFmpeg、Opus/RTP 和所有真实播放动作。
-- Edge 主动向 Cloud 建立 `WSS` 长连接。Cloud 永远不需要主动连接 Edge，也不需要打通 Edge 的入站端口。
-- KOOK Bot 指令继续完全在 Edge 本地执行。Cloud 离线时，Bot、现有播放队列和自动切歌仍可工作。
+- Cloud：公网 HTTPS Web、Web Auth/RBAC/Scope、审计、Runtime Read Cache、WSS Relay。
+- Edge：本地 WebUI、KOOK Bot、PlayHandler、FFmpeg、网易/QQ/Bilibili、Cookie/Credential。
+- Edge 只需要出站 Internet，不需要公网 IP，也不开放入站 WSS。
+- Cloud Web 与 Edge WSS 不共享公网端口：Web 使用 443，WSS 默认使用 `28470-28479` 端口池。
+- 一个 Edge 任意时刻只维持一条 Active WSS；端口池是候选池，不是并发连接池。
+- Cloud/WSS 故障不影响 Edge 本地 WebUI、KOOK Bot、当前播放与自动下一首。
 
-实现入口：
-
-```text
-cloud/run.py
-edge/run.py
-shared/relay_protocol.py
-```
-
-现有 `windows/run.py` / `Ubuntu/run.py` 仍保留为单机兼容模式。
-
-## 总体架构图
+## 总体架构
 
 ```mermaid
 flowchart LR
-    U[Browser / Mobile]
+    U[公网 Browser]
+    L[局域网/本机 Browser]
 
-    subgraph CLOUD["公网 Cloud Control Plane"]
-        RP[HTTPS Reverse Proxy]
-        WEB[Flask Web UI / API]
-        AUTH[SQLite Auth / RBAC / Scope]
-        CACHE[Runtime Read Cache]
-        HUB[Aiohttp Relay Hub]
+    subgraph CLOUD["Cloud"]
+      WEB[HTTPS Web :443]
+      AUTH[Auth/RBAC/Scope]
+      CACHE[Runtime Read Cache]
+      PROXY[WSS TLS ingress :28470-28479]
+      HUB[RelayHub 127.0.0.1:18476]
     end
 
-    subgraph EDGE["无公网 IP Edge Runtime"]
-        AGENT[Outbound Edge Agent]
-        LOCAL[Loopback Flask API]
-        BOT[KOOK Bot]
-        PLAY[PlayHandler / kookvoice]
-        NODE[NetEase + QQ Node API]
-        CREDS[Cookie / Credential]
-        FFMPEG[FFmpeg / Opus / RTP]
+    subgraph EDGE["Edge"]
+      LUI[Local WebUI]
+      SUP[EdgeAgentSupervisor]
+      CFG[ConfigStore + SecretStore]
+      BOT[KOOK Bot]
+      RT[PlayHandler / kookvoice]
+      MUSIC[Music adapters]
+      FFMPEG[FFmpeg / Opus / RTP]
     end
 
-    KOOK[KOOK]
-    MUSIC[Music Platforms]
-
-    U -->|HTTPS| RP
-    RP --> WEB
+    U --> WEB
     WEB --> AUTH
     WEB --> CACHE
     WEB --> HUB
-
-    AGENT -->|WSS / TCP 443 outbound| RP
-    RP --> HUB
-
-    AGENT --> LOCAL
-    LOCAL --> PLAY
-    LOCAL --> NODE
-    LOCAL --> CREDS
-
-    BOT --> PLAY
-    BOT --> NODE
-    BOT --> MUSIC
-
-    PLAY --> FFMPEG
-    FFMPEG --> KOOK
-    BOT --> KOOK
-    NODE --> MUSIC
+    PROXY --> HUB
+    SUP -->|Outbound WSS, one active port| PROXY
+    CFG --> SUP
+    L --> LUI
+    LUI --> RT
+    BOT --> RT
+    HUB --> SUP
+    SUP --> RT
+    RT --> FFMPEG
+    RT --> MUSIC
 ```
 
-## 数据边界
-
-| 数据 / 能力 | Cloud | Edge |
-|---|---:|---:|
-| HTML/CSS/JS | ✅ | 仅单机兼容模式 |
-| Web users / sessions | ✅ | ❌ |
-| RBAC / Scope | ✅ | ❌ |
-| Web audit | ✅ | ❌ |
-| Agent registry | ✅ | ❌ |
-| Guild/Channel read model | ✅ 副本 | ✅ 权威来源 |
-| Queue/Now Playing | ✅ 短期副本 | ✅ 权威状态 |
-| BOT_TOKEN | ❌ | ✅ |
-| 网易 Cookie | ❌ | ✅ |
-| QQ Cookie / refresh token | ❌ | ✅ |
-| Bilibili SESSDATA | ❌ | ✅ |
-| Node API | ❌ | ✅ |
-| PlayHandler | ❌ | ✅ |
-| FFmpeg/RTP | ❌ | ✅ |
-
-公网 Cloud 不需要 Node.js、FFmpeg、BOT_TOKEN 或任何音乐平台登录凭据。
-
-## Web 请求流程
-
-浏览器 API Contract 保持不变，例如：
+## 三条控制路径
 
 ```text
-POST /api/skip
-GET  /api/search
-GET  /api/playlist/current
+公网 WebUI -> Cloud Auth -> Relay RPC -> Edge Runtime
+本地 WebUI -------------------------> Edge Runtime
+KOOK Bot ---------------------------> Edge Runtime
 ```
 
-Cloud 先执行现有 Web Session、CSRF、Role、Scope 检查，然后把允许的运行时请求转换成严格白名单 RPC。
+三条路径共享同一个 Queue、PlayHandler 和音乐凭据，不复制播放状态。
 
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant C as Cloud Flask
-    participant A as Cloud Auth
-    participant H as Relay Hub
-    participant E as Edge Agent
-    participant L as Edge Loopback API
-    participant P as Playback
+## WSS 端口池
 
-    B->>C: POST /api/skip
-    C->>A: Session + CSRF + Role + Scope
-    A-->>C: ALLOW
-    C->>H: playback.skip
-    H->>E: WSS command
-    E->>L: POST /api/skip (fixed allowlisted path)
-    L->>P: Player.skip()
-    P-->>L: OK
-    L-->>E: JSON result
-    E-->>H: command result
-    H-->>C: result
-    C-->>B: HTTP 200
-```
-
-Cloud 不发送 shell、任意 URL 或任意本地 path。`shared/relay_protocol.py` 是唯一允许的 Runtime Action 清单。
-
-## WSS 协议
-
-协议版本当前为 `v=1`。
-
-Envelope：
-
-```json
-{
-  "v": 1,
-  "type": "command",
-  "ts": 1788250000.0,
-  "id": "command-id",
-  "action": "playback.skip",
-  "deadline": 1788250010.0,
-  "payload": {
-    "query": {},
-    "json": {
-      "guild_id": "123",
-      "channel_id": "456"
-    }
-  }
-}
-```
-
-消息类型：
+默认公网池：
 
 ```text
-hello
-hello_ack
-heartbeat
-heartbeat_ack
-command
-result
-event
+28470-28479
 ```
 
-Edge 事件：
+Cloud 内部 Relay 仍只有一个：
 
 ```text
-state.full
-state.runtime
-state.account
+127.0.0.1:18476
 ```
 
-连接流程：
+反向代理负责把十个公网 TLS/WSS 端口全部收敛到该 Relay。
 
-```mermaid
-sequenceDiagram
-    participant E as Edge
-    participant R as Reverse Proxy
-    participant H as Cloud Relay
+Edge 连接策略：
 
-    E->>R: WSS /edge/v1/connect
-    Note over E,R: Authorization: Bearer EDGE_AGENT_TOKEN
-    R->>H: WebSocket proxy
-    E->>H: hello(agent_id, boot_id, capabilities)
-    H-->>E: hello_ack
-    E->>H: event state.full
+1. 优先尝试 `preferred_port`（上次成功端口）。
+2. 其他候选端口随机化。
+3. TCP timeout/refused/network unreachable 时自动切换下一个端口。
+4. 全池失败后指数退避 + jitter，再开始下一轮。
+5. `AUTH_FAILED`、TLS 证书错误、协议不兼容属于配置错误，不进行无意义的端口轮询。
+6. 配置修改只重连 Agent，不重启 Bot/播放核心。
 
-    loop 15s
-        E->>H: heartbeat
-        H-->>E: heartbeat_ack
-    end
+## Edge 动态配置
 
-    loop 5s
-        E->>H: event state.runtime
-    end
-```
-
-WebSocket 本身启用 ping/pong；应用层 heartbeat 用于状态展示和故障判定。
-
-## 命令语义
-
-Cloud 不做离线命令排队。
-
-如果 Agent 不在线：
+Edge 的远程配置不直接写 `.env`。首次启动从 `.env` bootstrap，随后以本地持久化为准：
 
 ```text
-HTTP 503
-code = EDGE_OFFLINE
+<platform>/data/edge_config.db
 ```
 
-如果命令超过 deadline：
+保存 relay enabled、host、port range、path、TLS、Agent ID/名称和 preferred port。
+
+Agent Token 单独保存：
 
 ```text
-EDGE_TIMEOUT / DEADLINE_EXCEEDED
+<platform>/data/edge-agent.secret
 ```
 
-因此 `skip`、`pause` 等操作不会在 Edge 数分钟后恢复连接时突然执行。
+API 只返回 `token_configured`，不回显明文 Token。
 
-每个命令有唯一 `id`。Edge 保存最近 1024 个结果用于去重；相同 `id` 重发时返回旧结果，不重复执行 `playlist.add` 等非幂等动作。
+旧 `EDGE_RELAY_URL` 仍可 bootstrap；如果没有结构化 `EDGE_RELAY_HOST`，会解析旧 URL 并迁移成单端口池。
+
+## 本地 WebUI
+
+`edge/run.py` 继续复用 Windows/Ubuntu v2 应用，因此保留播放、音乐库、音乐账号、系统状态、设置、用户管理、桌面/移动端和主题能力。
+
+Edge 设置页额外提供远程节点配置、端口池检测、连接状态和重新连接。
+
+默认本地监听：
+
+```text
+127.0.0.1:18473
+```
+
+如需 LAN 访问，显式配置 `EDGE_LOCAL_WEB_HOST=0.0.0.0`，但 Auth/CSRF 不会关闭。
 
 ## 状态同步
 
 Edge 是播放状态权威源。
 
-首次连接、重连以及周期拓扑刷新时发送 `state.full`：
+- 首次连接/重连/周期拓扑刷新：`state.full`
+- 正常运行：`state.runtime`
+- 账号状态：`state.account`
+- Cloud 使用 Read Cache 服务高频读请求
+- 写操作、搜索、账号登录等仍实时 RPC
 
-```text
-agent metadata
-guilds
-channels
-runtime
-account status
-```
-
-正常运行每几秒发送 `state.runtime`：
-
-```text
-active channels
-playlist snapshots
-stats
-debug health
-```
-
-Cloud 使用内存 Read Cache 服务以下高频 GET：
-
-```text
-/api/guilds
-/api/channels
-/api/channels/active
-/api/playlist/current
-```
-
-这样浏览器轮询不会每次都跨公网 RPC。Cache 超时且 Edge 在线时自动回源；Edge 离线时允许返回带 `edge_stale=true` 的最后状态。
-
-搜索、账号登录、播放写操作等仍实时 RPC。
-
-## Edge 本地 API
-
-`edge/run.py` 复用现有 Windows/Ubuntu 完整运行时，但强制：
-
-```text
-HOST=127.0.0.1
-```
-
-因此原 Flask API 不暴露 LAN/Internet。
-
-Edge Agent 使用独立的 `data/edge_internal.db` 创建一个仅用于 loopback 调用的内部管理员 Session。该 Session：
-
-- 不经过 Cloud；
-- 不对浏览器公开；
-- Token 只存在 Edge 进程内存和 Hash；
-- 每 12 小时或认证失效时自动轮换；
-- 只调用 `shared/relay_protocol.py` 中的固定路径。
-
-这是一层兼容桥，使现有成熟的 Route、平台适配器和播放核心不需要在第一版 Remote 架构中复制。
-
-## KOOK Bot
-
-Bot 始终在 Edge：
-
-```mermaid
-flowchart LR
-    K[KOOK Gateway] --> B[Edge Bot Commands]
-    B --> R[Local Runtime]
-    R --> P[PlayHandler]
-    P --> K
-    R --> M[Music Platform APIs]
-```
-
-Cloud 不参与 Bot 指令处理。
-
-因此 Cloud Web 服务或 WSS Relay 暂时故障时：
-
-```text
-KOOK Bot             正常
-正在播放             正常
-队列自动推进         正常
-FFmpeg/RTP           正常
-Web UI               不可用或只显示旧状态
-远程 Web 控制        不可用
-```
-
-## Agent 身份
-
-第一版采用：
-
-```text
-TLS/WSS
-+
-256-bit 以上 Agent Token
-```
-
-Edge 在 WebSocket Upgrade 时发送：
-
-```http
-Authorization: Bearer <token>
-X-Agent-ID: edge-main
-```
-
-Cloud SQLite 只保存 `SHA256(token)`，明文 Token 只来自部署环境变量。
-
-Cloud 表：
-
-```text
-edge_agents
-edge_agent_guilds
-```
-
-`edge_agent_guilds` 为未来多 Edge 部署提供 Guild → Agent 路由。
+Cloud 离线时不排队播放命令；Edge 离线时 Cloud 返回 `EDGE_OFFLINE`。
 
 ## 安全边界
 
-禁止新增以下 Remote Action：
+远程协议只允许 `shared/relay_protocol.py` 中的业务 Action。禁止新增 shell、exec、任意 subprocess、任意 URL proxy 或任意文件读写。
 
-```text
-shell
-exec
-subprocess
-http.get arbitrary-url
-file.read arbitrary-path
-file.write arbitrary-path
-```
+Cloud 不持久化 BOT_TOKEN、音乐 Cookie、QQ refresh token 或 Bilibili SESSDATA。
 
-即使 Cloud 被攻破，Relay 协议也只能触发明确列入 `ACTIONS` 的业务操作。
+## 当前扩展边界
 
-现有 Edge Route 仍继续执行：
-
-- 请求字段长度/类型检查；
-- 队列上限；
-- 歌单导入上限；
-- 媒体 URL 限制；
-- Cookie/Credential 脱敏；
-- FFmpeg 参数数组；
-- 本地 Node API loopback 约束。
-
-## 故障模型
-
-| 故障 | Web UI | Web 播放操作 | KOOK Bot | 当前播放 |
-|---|---:|---:|---:|---:|
-| Cloud 挂 | ❌ | ❌ | ✅ | ✅ |
-| Edge 挂 | ✅ | ❌ | ❌ | ❌ |
-| WSS 中断 | ✅/旧状态 | ❌ | ✅ | ✅ |
-| 音乐 Node API 挂 | ✅ | 部分失败 | 部分失败 | 已解析媒体可继续 |
-| KOOK Gateway 异常 | ✅ | 受影响 | ❌ | 受影响 |
-
-## 当前约束
-
-Cloud Relay 和 Runtime Cache 当前为单进程内存状态，因此 Cloud 第一阶段按**单进程**运行。
-
-不要直接把 Cloud Flask 启动成多个独立 worker，否则每个 worker 不共享 Agent WebSocket 和 Read Cache。需要水平扩容时，再引入 Redis/NATS 作为 Relay Bus 与共享状态层。
-
-这一约束只存在于 Cloud；Edge 播放核心本来就是单进程所有权模型。
+Cloud Relay/Read Cache 第一阶段仍是单进程内存状态，因此 Cloud 运行单进程。未来水平扩容需要 Redis/NATS 等共享 Bus；这与 Edge 端口池故障转移是两个独立问题。
