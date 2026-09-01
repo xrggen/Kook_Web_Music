@@ -29,6 +29,7 @@ def create_app(hub: RelayHub) -> Flask:
     app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "").strip() or os.urandom(32)
     app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_REQUEST_BYTES", 1024 * 1024))
     app.extensions["edge_relay_hub"] = hub
+    app.jinja_env.globals["deployment_role"] = "cloud"
 
     @app.get("/")
     def index():
@@ -63,6 +64,27 @@ def create_app(hub: RelayHub) -> Flask:
         agents = hub.status()
         connected = any(bool(item.get("connected")) for item in agents)
         return jsonify({"status": "ok", "role": "cloud", "edge_connected": connected, "agents": len(agents)})
+
+    @app.get("/api/admin/cloud/edges")
+    def cloud_edges():
+        rows = []
+        for item in hub.status():
+            agent_id = str(item.get("agent_id", ""))
+            snapshot = hub.state_snapshot(agent_id)
+            full = snapshot.get("full") if isinstance(snapshot.get("full"), dict) else {}
+            agent = full.get("agent") if isinstance(full.get("agent"), dict) else {}
+            row = dict(item)
+            row["active_port"] = agent.get("active_port")
+            row["boot_id"] = agent.get("boot_id")
+            row["protocol_version"] = agent.get("protocol_version")
+            row["version"] = agent.get("version") or item.get("version")
+            rows.append(row)
+        return jsonify({
+            "success": True,
+            "edges": rows,
+            "public_wss_port_start": int(os.environ.get("EDGE_PUBLIC_WSS_PORT_START", "28470")),
+            "public_wss_port_end": int(os.environ.get("EDGE_PUBLIC_WSS_PORT_END", "28479")),
+        })
 
     proxy = RuntimeProxy(hub, control_auth)
     register_runtime_proxy_routes(app, proxy)
