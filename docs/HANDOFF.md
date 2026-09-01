@@ -1,248 +1,430 @@
 # 工程 Handoff
 
-生成日期：2026-08-31
+生成日期：2026-09-01
 
-工作分支：`refactor/desktop-ui-v2`
+工作分支：`feature/cloud-edge-control-plane`
 
-本文以当前分支工作树为准；接手时先读取当前分支 HEAD、工作区差异和部署配置，不把历史提交当作运行时配置依据。
+基线来源：`refactor/desktop-ui-v2` @ `076ad3d0e3f7461efa6686a0aaa5a12621b650d9`。
 
-> 安全约束：本文以及仓库其他文档不得记录真实 Bot Token、Cookie、Credential、Session Token、CSRF Token、管理员明文密码或签名媒体 URL。Bootstrap 管理员初始密码只能通过部署 Secret 或受限本地凭据文件提供，不进入 Git。
+> 安全约束：本文以及仓库其他文档不得记录真实 Bot Token、Agent Token、Cookie、Credential、Session/CSRF、管理员明文密码或签名媒体 URL。
 
-## 1. 当前系统状态
+## 1. 当前目标架构
 
-项目是 Windows/Ubuntu 双部署目录、共享业务实现的 KOOK 音乐控制服务：
+本分支已经把部署模型从“Web + Bot + Playback 同机”扩展为正式的 Cloud / Edge 分离模式，同时保留原单机入口作为兼容模式。
 
-- Flask 提供 Web 控制面和 HTTP API；
-- KOOK Bot 维护命令和网关连接；
-- 网易云与 QQ 使用本机 Node API；Bilibili 直接访问公网 API；
-- 播放状态继续驻留内存，以 `channel_id` 为主键；
-- Web 身份、Session、Scope、登录尝试和审计日志持久化到 SQLite；
-- FFmpeg/Opus/RTP 播放链路没有迁入数据库。
+### Cloud Control Plane
 
-Windows 是共享实现的权威主线；`scripts/check_platform_sync.py` 要求 Windows/Ubuntu 的共享 Python、模板、静态资源和测试保持字节一致。
-
-## 2. 本轮已完成工作
-
-### 2.1 仓库秘密审计
-
-`scripts/check_secrets.py` 已接入 `.github/workflows/platform-sync.yml`，CI 使用 `actions/checkout` 的完整历史检出，对以下范围执行扫描：
-
-- 当前所有 tracked 文件；
-- 所有可达 Git Blob；
-- Commit Message；
-- 敏感路径；
-- 私钥、常见平台 Token、JWT、Authorization 值、凭据 URL、真实环境变量秘密赋值等模式。
-
-第三方依赖作者邮箱、历史教程示例值和 npm/yarn lockfile 高熵串被归类为隐私/启发式告警，不作为凭据失败。扫描输出只报告类型与位置，不回显匹配值。
-
-发布前由 CI 或本地执行秘密扫描、平台同步、Python 编译和双平台单元测试；结果以当前提交和当前运行环境为准。
-
-### 2.2 Web 控制面鉴权
-
-核心实现：`windows/auth.py` 与 `Ubuntu/auth.py`。
-
-`api.py` 在 Blueprint 注册阶段调用 `register_auth(app)`，因此鉴权以统一 `before_request` / `after_request` Middleware 覆盖现有页面和 API，而没有给播放函数逐个增加装饰器。
-
-已实现：
-
-- 本地用户名/密码；
-- `admin` / `user` 两种角色；
-- playback Global/Guild/Channel Scope；
-- SQLite Session；
-- CSRF；
-- 登录失败限速；
-- 首次登录强制改密；
-- 用户创建、禁用、角色修改、Scope 修改、密码重置、删除；
-- `auth_version` 驱动的旧 Session 立即失效；
-- 审计日志；
-- 安全响应头；
-- 桌面/移动共享登录、改密、用户管理 UI。
-
-### 2.3 深度审计修复基线
-
-本分支已完成授权资源绑定、应用工厂、管理员并发不变量、Bot 默认授权、媒体 URL、第三方重定向、请求/队列上限、凭据原子写入、DOM XSS、日志脱敏和系统 Node 收缩等修复。Web 与 KOOK Bot 的通用命令执行能力以及 `/cmd` 已取消。
-
-完整问题矩阵、代码级修法、部署兼容性与后续约束集中记录在 [security-hardening.md](security-hardening.md)，不要在 Handoff 中复制一套容易失真的实现细节。
-
-### 2.4 最近自动化验证
-
-2026-08-31 由独立 `luna_worker` 在未修改工作树的前提下完成：
-
-- Windows unittest：57/57；
-- Ubuntu unittest：57/57；
-- Python 双平台编译：通过；
-- 平台同步：通过；
-- `git diff --check`：通过。
-
-上述 114 个测试结果不替代第三方平台在线验证、生产网络策略或 Git 全历史秘密扫描。
-
-## 3. Bootstrap 管理员
-
-默认 Bootstrap 用户名固定为 `gen`。
-
-只有 `users` 表为空时才创建该账号。它具有：
-
-- `role=admin`；
-- `enabled=1`；
-- `must_change_password=1`。
-
-初始明文密码**不在仓库中**。可通过 `INITIAL_ADMIN_PASSWORD` 注入；留空时首次启动生成 `INITIAL_ADMIN_CREDENTIAL_PATH` 指向的受限凭据文件（默认 `data/bootstrap-admin.json`），首次改密成功后自动删除。数据库只保存 PBKDF2-SHA256 Hash。
-
-首次成功登录后，只允许访问改密、注销和 Session 状态；其他页面会跳转到 `/change-password`，API 返回 `428`。改密成功会提升 `auth_version`、撤销旧 Session，并重新签发 Session。
-
-不要通过删除 `data/kook_music.db` 来“重置密码”，因为这会同时删除用户、Scope、Session 与审计记录并重新触发 Bootstrap 初始化。
-
-## 4. SQLite 控制面数据
-
-默认路径：
+入口：
 
 ```text
-data/kook_music.db
+cloud/run.py
 ```
 
-主要表：
+职责：
 
-- `users`
-- `sessions`
-- `login_attempts`
-- `guilds`
-- `channels`
-- `user_scopes`
-- `audit_logs`
-- `schema_migrations`
+- 公网 Web UI / HTTP API；
+- Web 用户、Session、CSRF、Admin/User、Scope；
+- SQLite IAM / audit；
+- Edge Agent Registry；
+- WSS Relay Hub；
+- Runtime Read Cache；
+- 把现有 `/api/*` Contract 转成严格白名单 RPC。
 
-SQLite 使用 WAL、Foreign Key、`busy_timeout=5000` 和 `synchronous=FULL`。
-
-数据库、`-wal`、`-shm`、`.env`、Cookie/Credential 等均为运行数据，已通过 `.gitignore` 排除。备份/迁移时 `data/` 与 `.env`、`Cookie/` 同等重要。
-
-## 5. 权限模型
-
-### Admin
-
-管理员拥有隐式全局权限，可以访问播放、账号、状态、设置、用户管理和管理 API。
-
-### User
-
-普通用户固定拥有：
-
-- `playback.read`
-- `playback.control`
-
-并必须至少配置一个 playback Scope：
+Cloud 不持有：
 
 ```text
-*
-guild:<KOOK_GUILD_ID>
-channel:<KOOK_GUILD_ID>/<KOOK_CHANNEL_ID>
+BOT_TOKEN
+音乐平台 Cookie/Credential
+Node API
+FFmpeg
+PlayHandler
 ```
 
-Role 决定“能做什么”，Scope 决定“能在哪个 KOOK 资源做”。管理员不需要在 `user_scopes` 中重复写全局 Scope。
+### Edge Runtime
 
-普通用户可访问 `/dashboard`、`/library`，以及播放所需的音乐账号只读状态/歌单接口；不能进入音乐账号管理、系统运维、设置和用户管理页面。
+入口：
 
-## 6. Session / CSRF
+```text
+edge/run.py
+```
+
+职责：
+
+- 根据 OS 选择 `windows/` 或 `Ubuntu/` 现有运行时；
+- 启动网易云 / QQ 本地 Node API；
+- 启动 KOOK Bot；
+- 保留原 `kookvoice`、PlayHandler、FFmpeg、Opus/RTP；
+- Flask API 强制绑定 `127.0.0.1`；
+- Edge Agent 主动通过 WSS 连接 Cloud；
+- 接收 Cloud 业务命令并调用 loopback 现有 API；
+- 周期推送拓扑、播放状态和健康状态。
+
+Edge 不需要公网 IP，也不开放任何公网入站端口。
+
+## 2. 关键设计
+
+### 2.1 通信
+
+```text
+Browser
+  -> HTTPS
+Cloud
+  -> WSS command
+Edge Agent
+  -> 127.0.0.1 Flask API
+Existing Runtime
+```
+
+Edge 主动发起：
+
+```text
+wss://<public-domain>/edge/v1/connect
+```
+
+外部反向代理把该路径转给 Cloud Relay；其他 HTTP 请求转给 Cloud Flask。
+
+### 2.2 Keepalive
+
+不是单独的 keepalive TCP，而是：
+
+```text
+WebSocket ping/pong
++
+应用层 heartbeat
++
+指数退避重连
+```
 
 默认：
 
-- Session idle：24 小时；
-- Session absolute：7 天；
-- Session Token：随机生成，浏览器 Cookie 持有原值，数据库只保存 SHA-256；
-- CSRF Token：独立随机值，数据库只保存 SHA-256；
-- Session Cookie：`HttpOnly`、`SameSite=Lax`；
-- CSRF Cookie：可供同源前端读取、`SameSite=Lax`；
-- 所有 POST/PUT/PATCH/DELETE 需要有效 CSRF；
-- `auth-client.js` 为同源 fetch/XHR 自动注入 `X-CSRF-Token`。
+- application heartbeat：15 秒；
+- runtime state：5 秒；
+- topology/full state：300 秒。
 
-公网 HTTPS 必须启用：
+### 2.3 命令协议
 
-```env
-AUTH_COOKIE_SECURE=true
+唯一协议定义：
+
+```text
+shared/relay_protocol.py
 ```
 
-仅当受信任反向代理会覆盖并清洗客户端 `X-Forwarded-For` 时启用：
+当前版本：
 
-```env
-AUTH_TRUST_PROXY_HEADERS=true
+```text
+PROTOCOL_VERSION = 1
 ```
 
-## 7. 关键文件
+只允许 `ACTIONS` 中显式声明的业务动作。
 
-| 文件 | 作用 |
-|---|---|
-| `windows/auth.py` / `Ubuntu/auth.py` | 身份、Session、CSRF、Role/Scope、IAM、审计 |
-| `api.py` | 在现有路由注册完成后安装统一 Auth Middleware |
-| `static/js/auth-client.js` | CSRF 自动注入和当前会话前端辅助 |
-| `static/js/users.js` | 用户管理 UI |
-| `static/css/auth.css` | 登录/改密/用户管理样式 |
-| `templates/login.html` | 登录 |
-| `templates/change_password.html` | 首次/主动改密 |
-| `templates/users.html` | 管理员用户管理 |
-| `tests/test_auth.py` | Bootstrap、密码、Scope、强制改密等回归测试 |
-| `scripts/check_secrets.py` | 当前树与全部可达历史秘密扫描 |
-| `scripts/check_platform_sync.py` | Windows/Ubuntu 共享文件一致性 |
-| `.github/workflows/platform-sync.yml` | 安全、同步、编译、双平台测试 CI |
+严禁增加：
 
-## 8. 部署接手检查
+```text
+shell
+exec
+任意 subprocess
+任意 URL 请求
+任意文件读写
+```
 
-首次部署或升级到该鉴权版本时：
+### 2.4 离线语义
 
-1. 备份平台目录的 `.env`、`Cookie/`、`data/`；
-2. 拉取当前目标提交；
-3. 安装 Python 依赖并确认系统 Node/npm 与全局音乐 API 版本；
-4. 检查 `.env` 的 `SECRET_KEY` 和 `AUTH_*`；
-5. 启动应用；
-6. 访问 `/login`；
-7. 从部署 Secret 或受限凭据文件读取 Bootstrap 凭据并登录；
-8. 完成强制改密；
-9. 创建第二个管理员作为恢复路径；
-10. 再创建普通用户并验证 Scope；
-11. 验证账号页、系统页只有管理员可进入；
-12. 验证 Windows/Ubuntu CI。
+Cloud 不对播放写命令做离线排队。
 
-生产环境应令 Flask 只监听回环地址并由 HTTPS 反向代理暴露；18474/18475 绝不能直接暴露公网。
+Agent 离线：
 
-## 9. 当前安全边界与后续工作
+```text
+HTTP 503
+EDGE_OFFLINE
+```
 
-当前 Web 控制面不提供远程 shell 命令执行能力，KOOK `/cmd` 指令也已取消。`/api/terminal/output` 仅返回管理员可读的运行日志增量。
+命令超时：
 
-Bootstrap 密码支持部署 Secret 注入或首次启动生成受限本地凭据文件；首次改密成功后凭据文件会被删除。Schema 使用顺序化版本迁移，升级前仍应备份 `data/`。
+```text
+HTTP 504
+EDGE_TIMEOUT
+```
 
-### P1：管理员恢复流程
+每条命令带 deadline 和唯一 id。Edge 缓存最近 1024 个 result，重复 command id 不重复执行。
 
-目前没有离线管理员密码恢复 CLI。建议增加只允许本机运行、明确审计/提示的数据恢复工具，而不是通过删除数据库恢复 Bootstrap 账号。
+## 3. 状态所有权
 
-### P2：审计日志运维界面
+Edge 始终是运行状态权威源。
 
-`audit_logs` 已落库，但尚无专门的只读查询/导出页面。后续可以提供管理员只读查询、保留周期和安全导出能力。
+Cloud 只保存 Read Cache：
 
-## 10. 接手后的推荐阅读顺序
+```text
+Guild
+Channel
+Active Channel
+Queue
+Now Playing
+Playback Modes
+Health
+Account Status
+```
+
+高频读取：
+
+```text
+/api/guilds
+/api/channels
+/api/channels/active
+/api/playlist/current
+```
+
+优先使用 Cloud Cache，避免浏览器轮询每次跨公网 RPC。
+
+搜索、账号操作、播放写操作实时走 Edge。
+
+## 4. KOOK Bot 故障隔离
+
+KOOK Bot 完整留在 Edge，并继续直接调用现有平台适配器与 `kookvoice`。
+
+因此 Cloud/WSS 故障时：
+
+```text
+KOOK Bot           正常
+正在播放           正常
+队列自动推进       正常
+FFmpeg/RTP         正常
+Web UI             不可用或显示旧状态
+远程 Web 控制      不可用
+```
+
+不要把 Bot Command 改造成必须经过 Cloud 的 RPC。
+
+## 5. Web 鉴权
+
+Cloud 复用当前成熟的 `windows/auth.py` Auth 实现以及 Windows 共享模板/静态资源。
+
+Cloud SQLite 保存：
+
+```text
+users
+sessions
+login_attempts
+guilds
+channels
+user_scopes
+audit_logs
+schema_migrations
+edge_agents
+edge_agent_guilds
+```
+
+Role/Scope 仍为：
+
+```text
+admin -> global
+user  -> playback.read + playback.control + Global/Guild/Channel Scope
+```
+
+Edge 的 `data/edge_internal.db` 只用于 loopback Agent Service Session，不是 Web 用户数据库。
+
+## 6. Agent 身份
+
+第一版：
+
+```text
+TLS/WSS
++
+EDGE_AGENT_ID
++
+EDGE_AGENT_TOKEN >= 32 chars
+```
+
+WebSocket Upgrade：
+
+```http
+Authorization: Bearer <agent token>
+X-Agent-ID: edge-main
+```
+
+Cloud DB 只保存 Agent Token SHA-256。
+
+Agent Token 只能通过部署环境变量/Secret 管理，不进 Git。
+
+## 7. 新增目录
+
+```text
+cloud/
+  __init__.py
+  app.py
+  run.py
+  relay.py
+  runtime_proxy.py
+  agent_registry.py
+  requirements.txt
+  .env.example
+  Caddyfile.example
+
+edge/
+  __init__.py
+  run.py
+  agent.py
+  local_control.py
+  .env.example
+
+shared/
+  __init__.py
+  relay_protocol.py
+
+docs/
+  cloud-edge-architecture.md
+  cloud-edge-deployment.md
+```
+
+## 8. 现有目录的角色
+
+`windows/` / `Ubuntu/` 不再需要复制一份新的 Remote Runtime 实现。
+
+`edge/run.py` 直接复用其成熟代码，因此：
+
+- Bot 指令行为不变；
+- Node API 生命周期不变；
+- QQ Credential lifecycle 不变；
+- Bilibili 直连模式不变；
+- PlayHandler/FFmpeg/RTP 不变；
+- watchdog 不变；
+- 安全加固边界继续生效。
+
+原：
+
+```text
+python windows/run.py
+python Ubuntu/run.py
+```
+
+仍是单机兼容模式。
+
+正式分离部署使用：
+
+```text
+python cloud/run.py
+python edge/run.py
+```
+
+## 9. Cloud 部署关键点
+
+Cloud 只运行单进程第一版：
+
+```text
+1 Flask process
+1 aiohttp Relay event loop
+1 Runtime Read Cache
+```
+
+不要直接启动多个独立 Gunicorn worker，因为 Agent WebSocket 所有权和 Cache 当前不跨进程共享。
+
+Cloud 监听建议：
+
+```text
+127.0.0.1:18473 Flask
+127.0.0.1:18476 Relay
+```
+
+公网只开放 HTTPS 443，由 Caddy/Nginx：
+
+```text
+/edge/v1/connect -> 18476
+其他请求         -> 18473
+```
+
+## 10. Edge 部署关键点
+
+现有平台 `.env` 保留 BOT_TOKEN、Node API、FFmpeg、ALLOW* 和 Credential 配置。
+
+新增 `edge/.env`：
+
+```text
+EDGE_AGENT_ID
+EDGE_AGENT_TOKEN
+EDGE_RELAY_URL
+```
+
+Edge Flask 被代码强制：
+
+```text
+127.0.0.1 only
+```
+
+不允许把 18473/18474/18475 做公网端口映射。
+
+## 11. 数据迁移
+
+如保留当前 Web 用户，停止旧实例后把原：
+
+```text
+windows/data/kook_music.db
+或 Ubuntu/data/kook_music.db
+```
+
+复制到：
+
+```text
+cloud/data/kook_music.db
+```
+
+音乐平台状态仍留在 Edge：
+
+```text
+.env
+Cookie/
+```
+
+不要把音乐 Cookie 搬到 Cloud。
+
+## 12. 当前验证状态
+
+按项目所有者要求，本次 Cloud/Edge 实现：
+
+- 没有创建 PR；
+- 没有创建或主动运行 CI；
+- 没有修改现有 GitHub Actions；
+- 新架构质检留给其他 Agent 或人工执行。
+
+本分支新增代码集中在 `cloud/`、`edge/`、`shared/` 和 `docs/`，没有为了 Remote 架构改写 Windows/Ubuntu 播放核心。
+
+后续质检至少应执行：
+
+1. Python compile；
+2. `shared/relay_protocol.py` Action/path 一致性；
+3. Cloud/Edge 同机 `ws://` 联调；
+4. Caddy/Nginx `wss://` 联调；
+5. Admin/User/Scope；
+6. 三平台搜索/账号/歌单；
+7. join/play/pause/resume/skip/seek/promote/clear；
+8. Cloud 断网时 Bot/Playback 连续性；
+9. Edge 重连后的 full state 恢复；
+10. Agent Token 错误/禁用/重复连接；
+11. 超时命令不延迟执行；
+12. 日志与 WSS 中不存在 Credential 泄漏。
+
+## 13. 推荐阅读顺序
 
 1. `docs/HANDOFF.md`
-2. `docs/authentication.md`
-3. `docs/security.md`
-4. `docs/architecture.md`
-5. `windows/auth.py`
-6. `windows/api.py`
-7. `windows/tests/test_auth.py`
-8. `scripts/check_secrets.py`
-9. `scripts/check_platform_sync.py`
-10. `docs/deployment.md`
+2. `docs/cloud-edge-architecture.md`
+3. `docs/cloud-edge-deployment.md`
+4. `shared/relay_protocol.py`
+5. `cloud/relay.py`
+6. `cloud/runtime_proxy.py`
+7. `edge/agent.py`
+8. `edge/local_control.py`
+9. `edge/run.py`
+10. `docs/security-hardening.md`
 
-## 11. 修改完成后的最低验证
+## 14. 后续扩容方向
 
-仓库根目录：
+当前 Cloud 为单实例。
 
-```bash
-python scripts/check_secrets.py
-python scripts/check_platform_sync.py
-python -m compileall windows Ubuntu
+真正需要多 Cloud Worker / HA 时，再引入：
+
+```text
+Redis 或 NATS
+Agent connection ownership
+Command correlation bus
+Shared Runtime Read Model
 ```
 
-再分别执行两个平台的全部测试：
-
-```bash
-python -m unittest discover -s windows/tests -p "test_*.py"
-python -m unittest discover -s Ubuntu/tests -p "test_*.py"
-```
-
-对于鉴权改动，还要人工覆盖：未登录、错误密码限速、首次改密、Admin/User 页面边界、Global/Guild/Channel Scope、CSRF、禁用/角色变化后的 Session 失效、移动端导航与 HTTPS Cookie 行为。
+不要在当前版本直接用多 worker 共享同一个公网域名，否则请求可能落到不持有对应 Agent WebSocket 的进程。
