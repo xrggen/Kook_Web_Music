@@ -1,5 +1,10 @@
-# 公网 Web UI 只使用标准 HTTPS 443。
-music.example.com {
+# Cloud 公网 Web UI 使用独立非标准 HTTPS 端口 28443。
+# 访问地址：https://music.example.com:28443/
+# Cloud Flask 仍只监听 127.0.0.1:18473。
+#
+# 使用 Caddy 自动申请/续期公网证书时，建议防火墙同时允许 TCP 80，
+# 供 ACME HTTP-01 challenge 使用。443 不作为本项目正式业务入口。
+https://music.example.com:28443 {
     encode zstd gzip
     reverse_proxy 127.0.0.1:18473
 }
