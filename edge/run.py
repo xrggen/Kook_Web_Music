@@ -28,7 +28,9 @@ def _load_configuration(platform_dir: Path) -> None:
     edge_env = Path(os.environ.get("EDGE_ENV_FILE", EDGE_DIR / ".env")).expanduser()
     if not edge_env.is_absolute():
         edge_env = ROOT / edge_env
-    load_dotenv(edge_env, override=False)
+    # edge/.env owns relay-specific deployment values while platform .env keeps
+    # BOT_TOKEN, media and music-platform settings.
+    load_dotenv(edge_env, override=True)
 
     local_port = os.environ.get("EDGE_LOCAL_PORT", "18473").strip() or "18473"
     os.environ["HOST"] = "127.0.0.1"
