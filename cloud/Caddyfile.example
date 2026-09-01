@@ -1,8 +1,58 @@
+# 公网 Web UI 只使用标准 HTTPS 443。
 music.example.com {
     encode zstd gzip
-
-    @edge path /edge/v1/connect
-    reverse_proxy @edge 127.0.0.1:18476
-
     reverse_proxy 127.0.0.1:18473
+}
+
+# Edge WSS 使用独立非标准端口池。所有入口收敛到同一个本地 RelayHub。
+# 防火墙需放行 TCP 28470-28479；18473/18476 不应直接暴露公网。
+https://music.example.com:28470 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28471 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28472 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28473 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28474 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28475 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28476 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28477 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28478 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
+}
+https://music.example.com:28479 {
+    @edge path /edge/v1/connect
+    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    respond 404
 }
