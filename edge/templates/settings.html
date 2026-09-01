@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>设置 - gen Music Edge</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet" integrity="sha384-l4UPAMHGzl7zwogLW4nOwaU2XTk6oiM1jhCRQstZEndoIiA2I5bg6fST3wzBSRBD" crossorigin="anonymous">
+    <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='css/app.css', v='1.0') }}" rel="stylesheet">
+</head>
+<body class="app-page settings-page">
+<div class="music-app-shell">
+    {% set active_page = 'settings' %}
+    {% set sidebar_title = '设置' %}
+    {% set sidebar_icon = 'bi-gear-fill' %}
+    {% include '_app_sidebar.html' %}
+
+    <main class="app-stage app-page-stage">
+        <header class="page-topbar">
+            <div class="page-topbar-copy"><small>gen Music / EDGE SETTINGS</small><strong>本地控制台与远程节点</strong></div>
+            <div class="page-topbar-actions"><a class="app-header-button primary" href="/dashboard"><i class="bi bi-play-fill"></i><span>返回播放</span></a></div>
+        </header>
+
+        <section class="page-heading">
+            <div class="page-heading-copy">
+                <span class="page-eyebrow">LOCAL + REMOTE</span>
+                <h1>设置</h1>
+                <p>Edge 本地 WebUI 始终独立工作；远程控制节点是附加能力。修改 Cloud/WSS 配置只重连 Agent，不重启 KOOK Bot、播放核心、FFmpeg 或本地 WebUI。</p>
+            </div>
+            <div class="page-heading-meta"><span class="page-chip"><span class="dot"></span> Edge Local</span></div>
+        </section>
+
+        <div class="page-content settings-layout">
+            <div class="settings-stack">
+                <section class="surface-panel">
+                    <div class="surface-heading"><div><span class="page-eyebrow">REMOTE CONTROL</span><h2>远程控制节点</h2><p>Edge 主动连接 Cloud。任意时刻只维持一条 WSS，当前端口失败时自动在端口池内切换。</p></div></div>
+                    <div class="surface-body">
+                        <div class="setting-row">
+                            <div class="setting-copy"><strong>启用远程控制</strong><span>关闭后只保留本地 WebUI、KOOK Bot 与本地播放，不再连接 Cloud。</span></div>
+                            <label class="switch-control"><input type="checkbox" id="edge-relay-enabled"><span aria-hidden="true"></span></label>
+                        </div>
+                        <div class="row g-3 mt-1">
+                            <div class="col-12 col-lg-7"><label class="form-label small" for="edge-relay-host">Cloud 主机</label><input class="form-control" id="edge-relay-host" autocomplete="off" placeholder="music.example.com"></div>
+                            <div class="col-6 col-lg-2"><label class="form-label small" for="edge-relay-port-start">起始端口</label><input class="form-control" id="edge-relay-port-start" type="number" min="1024" max="65535" value="28470"></div>
+                            <div class="col-6 col-lg-3"><label class="form-label small" for="edge-relay-port-end">结束端口</label><input class="form-control" id="edge-relay-port-end" type="number" min="1024" max="65535" value="28479"></div>
+                            <div class="col-12 col-lg-7"><label class="form-label small" for="edge-relay-path">WSS 路径</label><input class="form-control" id="edge-relay-path" value="/edge/v1/connect"></div>
+                            <div class="col-12 col-lg-5"><label class="form-label small" for="edge-agent-id">Agent ID</label><input class="form-control" id="edge-agent-id" autocomplete="off" value="edge-main"></div>
+                            <div class="col-12 col-lg-6"><label class="form-label small" for="edge-agent-name">Agent 名称</label><input class="form-control" id="edge-agent-name" autocomplete="off" value="Primary Edge"></div>
+                            <div class="col-12 col-lg-6"><label class="form-label small" for="edge-agent-token">Agent Token</label><input class="form-control" id="edge-agent-token" type="password" autocomplete="new-password" placeholder="已配置时留空不修改"></div>
+                        </div>
+                        <div class="setting-row mt-3">
+                            <div class="setting-copy"><strong>TLS 证书验证</strong><span>生产环境应保持开启；关闭只用于受控测试环境。</span></div>
+                            <label class="switch-control"><input type="checkbox" id="edge-relay-tls" checked><span aria-hidden="true"></span></label>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mt-3">
+                            <button class="app-header-button primary" id="edge-relay-save" type="button"><i class="bi bi-save2"></i><span>保存并重新连接</span></button>
+                            <button class="app-header-button" id="edge-relay-test" type="button"><i class="bi bi-broadcast"></i><span>检测端口池</span></button>
+                            <button class="app-header-button" id="edge-relay-reconnect" type="button"><i class="bi bi-arrow-repeat"></i><span>立即重连</span></button>
+                        </div>
+                        <div id="edge-relay-message" class="muted-copy mt-3" style="font-size:.66rem;"></div>
+                    </div>
+                </section>
+
+                <section class="surface-panel">
+                    <div class="surface-heading"><div><span class="page-eyebrow">PORT POOL</span><h2>WSS 连接状态</h2><p>优先复用上次成功端口；网络型失败自动切换，Token/TLS/协议配置错误不会无意义轮询全部端口。</p></div></div>
+                    <div class="surface-body">
+                        <div class="status-list">
+                            <div class="status-row"><span>连接状态</span><strong><span id="edge-relay-status" class="status-pill">读取中</span></strong></div>
+                            <div class="status-row"><span>当前入口</span><strong id="edge-relay-active">—</strong></div>
+                            <div class="status-row"><span>WSS RTT</span><strong id="edge-relay-latency">—</strong></div>
+                            <div class="status-row"><span>最近心跳</span><strong id="edge-relay-heartbeat">—</strong></div>
+                        </div>
+                        <div id="edge-port-health" class="d-flex flex-wrap gap-2 mt-3" aria-label="WSS 端口池状态"></div>
+                    </div>
+                </section>
+
+                <section class="surface-panel">
+                    <div class="surface-heading"><div><span class="page-eyebrow">INTERFACE</span><h2>界面体验</h2><p>与 v2 本地控制台一致，偏好保存在当前浏览器 localStorage。</p></div></div>
+                    <div class="surface-body">
+                        <div class="setting-row">
+                            <div class="setting-copy"><strong>主题模式</strong><span>深色、浅色或跟随系统。</span></div>
+                            <div class="theme-choice-group" role="radiogroup" aria-label="主题模式">
+                                <label class="theme-choice"><input type="radio" name="ui-theme" id="theme-dark" value="dark"><span><i class="bi bi-moon-stars-fill"></i>深色</span></label>
+                                <label class="theme-choice"><input type="radio" name="ui-theme" id="theme-light" value="light"><span><i class="bi bi-sun-fill"></i>浅色</span></label>
+                                <label class="theme-choice"><input type="radio" name="ui-theme" id="theme-system" value="system"><span><i class="bi bi-circle-half"></i>跟随系统</span></label>
+                            </div>
+                        </div>
+                        <div class="setting-row"><div class="setting-copy"><strong>紧凑布局</strong><span>减少面板和列表垂直间距。</span></div><label class="switch-control"><input type="checkbox" id="density-toggle"><span aria-hidden="true"></span></label></div>
+                        <div class="setting-row"><div class="setting-copy"><strong>减少动画</strong><span>降低远程桌面或低性能环境下的视觉开销。</span></div><label class="switch-control"><input type="checkbox" id="motion-toggle"><span aria-hidden="true"></span></label></div>
+                    </div>
+                </section>
+            </div>
+
+            <aside class="settings-stack">
+                <section class="surface-panel">
+                    <div class="surface-heading"><div><span class="page-eyebrow">EDGE LOCAL</span><h2>本地控制面</h2></div></div>
+                    <div class="surface-body">
+                        <div class="settings-note"><strong>本地 WebUI 独立运行</strong><br>Cloud/WSS 断线不会影响 KOOK Bot、当前播放、自动下一首、音乐平台凭据和本地 WebUI。</div>
+                        <div class="settings-note mt-2"><strong>本地监听</strong><br>默认 127.0.0.1:18473。如需局域网访问，请通过 EDGE_LOCAL_WEB_HOST=0.0.0.0 显式开放，并保留 Web Auth/CSRF 与主机防火墙。</div>
+                        <div class="settings-note mt-2"><strong>Token 不回显</strong><br>Agent Token 使用独立 Secret 文件原子保存；API 只返回是否已配置，网页不会读取原值。</div>
+                    </div>
+                </section>
+                <section class="surface-panel settings-danger">
+                    <div class="surface-heading"><div><span class="page-eyebrow">RESET UI</span><h2>重置界面偏好</h2></div></div>
+                    <div class="surface-body">
+                        <p class="muted-copy" style="font-size:.68rem;line-height:1.6;margin-top:0;">只清除主题、紧凑布局和动画偏好，不修改远程节点或 Agent Token。</p>
+                        <button class="app-header-button" type="button" id="settings-reset-btn"><i class="bi bi-arrow-counterclockwise"></i><span>恢复默认界面设置</span></button>
+                        <div id="settings-message" class="muted-copy" style="margin-top:10px;font-size:.64rem;"></div>
+                    </div>
+                </section>
+            </aside>
+        </div>
+    </main>
+</div>
+<script src="{{ url_for('static', filename='js/app-ui.js', v='2.0') }}"></script>
+<script src="{{ url_for('static', filename='js/settings.js', v='2.0') }}"></script>
+<script src="/edge-static/edge-settings.js?v=1.0"></script>
+</body>
+</html>
