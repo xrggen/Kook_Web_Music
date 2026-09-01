@@ -3,10 +3,10 @@
 <script src="{{ url_for('static', filename='js/auth-client.js', v='1.0') }}"></script>
 
 <header class="mobile-app-header">
-    <a class="mobile-app-brand" href="/dashboard" aria-label="KOOK Music">
+    <a class="mobile-app-brand" href="/dashboard" aria-label="gen Music">
         <span class="brand-mark" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
         <span>
-            <small id="mobile-header-context">{% if active_page == 'play' %}选择播放目标{% else %}KOOK MUSIC{% endif %}</small>
+            <small id="mobile-header-context">{% if active_page == 'play' %}选择播放目标{% else %}gen Music{% endif %}</small>
             <strong id="mobile-header-title">{{ sidebar_title|default('播放') }}</strong>
         </span>
     </a>
@@ -23,9 +23,9 @@
 </header>
 
 <aside class="app-sidebar" aria-label="主导航">
-    <a class="app-brand" href="/dashboard" aria-label="KOOK Music 播放控制台">
+    <a class="app-brand" href="/dashboard" aria-label="gen Music 播放控制台">
         <span class="brand-mark" aria-hidden="true"><i class="bi bi-soundwave"></i></span>
-        <span>KOOK Music</span>
+        <span>gen Music</span>
     </a>
 
     <nav class="app-nav">
@@ -62,7 +62,7 @@
     {% else %}
     <div class="sidebar-session-card sidebar-page-card">
         <span class="session-icon" aria-hidden="true"><i class="bi {{ sidebar_icon|default('bi-grid-fill') }}"></i></span>
-        <div><small>当前页面</small><strong>{{ sidebar_title|default('KOOK Music') }}</strong></div>
+        <div><small>当前页面</small><strong>{{ sidebar_title|default('gen Music') }}</strong></div>
         <span class="page-indicator" aria-hidden="true"></span>
     </div>
     {% endif %}
