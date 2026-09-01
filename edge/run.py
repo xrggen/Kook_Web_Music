@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from jinja2 import ChoiceLoader, FileSystemLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 EDGE_DIR = Path(__file__).resolve().parent
@@ -28,27 +28,14 @@ def _load_configuration(platform_dir: Path) -> None:
     edge_env = Path(os.environ.get("EDGE_ENV_FILE", EDGE_DIR / ".env")).expanduser()
     if not edge_env.is_absolute():
         edge_env = ROOT / edge_env
-    # edge/.env owns relay-specific deployment values while platform .env keeps
-    # BOT_TOKEN, media and music-platform settings.
     load_dotenv(edge_env, override=True)
 
-    local_port = os.environ.get("EDGE_LOCAL_PORT", "18473").strip() or "18473"
-    os.environ["HOST"] = "127.0.0.1"
-    os.environ["PORT"] = local_port
-
-    edge_db_text = os.environ.get("EDGE_LOCAL_AUTH_DATABASE_PATH", "").strip()
-    if edge_db_text:
-        edge_db = Path(edge_db_text).expanduser()
-        if not edge_db.is_absolute():
-            edge_db = platform_dir / edge_db
-    else:
-        edge_db = platform_dir / "data" / "edge_internal.db"
-    os.environ["AUTH_DATABASE_PATH"] = str(edge_db.resolve())
-
-    os.environ["INITIAL_ADMIN_USERNAME"] = "edge_local_admin"
-    os.environ["INITIAL_ADMIN_PASSWORD"] = secrets.token_urlsafe(36) + "!Aa1"
-    os.environ["AUTH_COOKIE_SECURE"] = "false"
-    os.environ["AUTH_TRUST_PROXY_HEADERS"] = "false"
+    os.environ.setdefault("EDGE_LOCAL_WEB_HOST", "127.0.0.1")
+    os.environ.setdefault("EDGE_LOCAL_PORT", os.environ.get("PORT", "18473"))
+    os.environ["HOST"] = os.environ["EDGE_LOCAL_WEB_HOST"]
+    os.environ["PORT"] = os.environ["EDGE_LOCAL_PORT"]
+    os.environ.setdefault("AUTH_COOKIE_SECURE", "false")
+    os.environ.setdefault("AUTH_TRUST_PROXY_HEADERS", "false")
 
 
 def main() -> None:
@@ -67,7 +54,10 @@ def main() -> None:
     import run as platform_run
     from app import create_app
     from runtime_health import runtime_health
-    from edge.agent import EdgeAgent
+    from edge.agent import EdgeAgentSupervisor
+    from edge.config_store import EdgeConfigStore
+    from edge.management import register_edge_management
+    from edge.secret_store import EdgeSecretStore
 
     os.chdir(platform_dir)
     platform_run._install_shutdown_hooks()
@@ -75,21 +65,32 @@ def main() -> None:
     platform_run.start_qq_music_api()
 
     application = create_app()
+    application.jinja_loader = ChoiceLoader([
+        FileSystemLoader(str(EDGE_DIR / "templates")),
+        application.jinja_loader,
+    ])
+    application.jinja_env.globals["deployment_role"] = "edge"
+
     runtime_health.mark_supervisor_ready()
     platform_run._start_watchdog_once()
 
     local_port = int(os.environ["PORT"])
-    agent = EdgeAgent(platform_dir, local_port)
-    agent.start()
+    config_store = EdgeConfigStore(platform_dir)
+    secret_store = EdgeSecretStore(platform_dir)
+    supervisor = EdgeAgentSupervisor(platform_dir, local_port, config_store, secret_store)
+    register_edge_management(application, supervisor, config_store, secret_store, EDGE_DIR)
+    application.extensions["edge_agent_supervisor"] = supervisor
+    application.extensions["edge_config_store"] = config_store
+    supervisor.start()
 
-    logging.getLogger(__name__).info(
-        "Edge local control API is loopback-only: http://127.0.0.1:%d", local_port
+    host = os.environ.get("EDGE_LOCAL_WEB_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    logging.basicConfig(
+        level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     )
-    logging.getLogger(__name__).info(
-        "Edge outbound relay target configured (agent_id=%s)",
-        os.environ.get("EDGE_AGENT_ID", "edge-main"),
-    )
-    application.run(host="127.0.0.1", port=local_port, debug=False, use_reloader=False, threaded=True)
+    logging.getLogger(__name__).info("Edge Local WebUI listening on http://%s:%d", host, local_port)
+    logging.getLogger(__name__).info("Edge remote supervisor started; local WebUI/Bot/playback remain independent from Cloud")
+    application.run(host=host, port=local_port, debug=False, use_reloader=False, threaded=True)
 
 
 if __name__ == "__main__":
