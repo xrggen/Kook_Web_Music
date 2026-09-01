@@ -11,6 +11,8 @@
 5. [security.md](security.md)
 6. [operations.md](operations.md)
 
+> 如果任务是“安装或部署系统”，即使没有 Linux、Python、Node.js、Caddy、WSS 或服务器运维经验，也应直接从 [cloud-edge-deployment.md](cloud-edge-deployment.md) 开始。该文档按零基础人员可逐步执行的方式编写，并为每一步给出验证和常见故障处理。
+
 ## 当前核心事实
 
 - 公网 Web UI 使用 HTTPS 443。
@@ -27,7 +29,7 @@
 |---|---|
 | [HANDOFF.md](HANDOFF.md) | 当前工程交接、关键实现、运行数据、质检边界 |
 | [cloud-edge-architecture.md](cloud-edge-architecture.md) | 双控制面、WSS 端口池、Agent Supervisor、状态同步、故障与安全边界 |
-| [cloud-edge-deployment.md](cloud-edge-deployment.md) | 443 Web、28470-28479 WSS、Edge 本地 WebUI、动态配置与迁移 |
+| [cloud-edge-deployment.md](cloud-edge-deployment.md) | 面向零基础部署人员的完整 Cloud/Edge 安装、域名、DNS、防火墙、Caddy、443 Web、28470-28479 WSS、Windows/Ubuntu Edge、本地 WebUI、验证、排错、备份、升级和回滚步骤 |
 | [security-hardening.md](security-hardening.md) | 深度审计问题、修复与验证证据 |
 | [architecture.md](architecture.md) | 单机兼容模式与播放核心 |
 | [deployment.md](deployment.md) | Windows/Ubuntu 单机兼容部署 |
