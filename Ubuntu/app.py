@@ -368,7 +368,14 @@ async def play_music(msg: Message, music_input: str = ''):
 
         # 添加音乐到播放队列
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
-        extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
+        extra_data = {
+            "音乐名字": song_name,
+            "title": song_name,
+            "歌手": artist_name,
+            "artist": artist_name,
+            "点歌人": msg.author_id,
+            "文字频道": msg.ctx.channel.id,
+        }
         player.add_music(music_url, extra_data, msg.ctx.guild.id)
         logger.info("[命令:wy] 已加入队列 name=%r", str(song_name)[:120])
 
@@ -413,7 +420,14 @@ async def qq_cmd(msg: Message, music_input: str = ''):
             return
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
-        extra_data = {"音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id}
+        extra_data = {
+            "音乐名字": song_name,
+            "title": song_name,
+            "歌手": artist_name,
+            "artist": artist_name,
+            "点歌人": msg.author_id,
+            "文字频道": msg.ctx.channel.id,
+        }
         player.add_music(music_url, extra_data, msg.ctx.guild.id)
         logger.info("[命令:qq] 已加入队列 name=%r", str(song_name)[:120])
 
@@ -1100,7 +1114,12 @@ async def bili_cmd(msg: Message, music_input: str = '', page_input: str = '0'):
 
         player = kookvoice.Player(voice_channel_id, BOT_TOKEN)
         extra_data = {
-            "音乐名字": song_name, "点歌人": msg.author_id, "文字频道": msg.ctx.channel.id,
+            "音乐名字": song_name,
+            "title": song_name,
+            "歌手": artist_name,
+            "artist": artist_name,
+            "点歌人": msg.author_id,
+            "文字频道": msg.ctx.channel.id,
             "platform": "bili",
             "duration": play_info.get("duration", 0),  # 方案A：API已知时长
         }

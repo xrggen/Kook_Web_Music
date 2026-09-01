@@ -3,8 +3,12 @@
  */
 function accountSafeImageUrl(value) {
     try {
-        const url = new URL(String(value || ''), window.location.origin);
-        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+        let raw = String(value || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('//')) raw = `https:${raw}`;
+        else if (/^http:\/\//i.test(raw)) raw = `https://${raw.slice(7)}`;
+        const url = new URL(raw, window.location.origin);
+        return url.protocol === 'https:' || url.origin === window.location.origin ? url.href : '';
     } catch (_) {
         return '';
     }
@@ -380,7 +384,7 @@ class AccountManager {
                                 window.open(targetUrl, '_blank', 'noopener,noreferrer');
                             }
                         });
-                    const image = $('<img>', { class: 'card-img-top', alt: name })
+                    const image = $('<img>', { class: 'card-img-top', alt: name, loading: 'lazy', referrerpolicy: 'no-referrer' })
                         .attr('src', accountSafeImageUrl(pl.coverImgUrl) || placeholder)
                         .on('error', function() { $(this).attr('src', placeholder); });
                     const body = $('<div>', { class: 'card-body p-2' })

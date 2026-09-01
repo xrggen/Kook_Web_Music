@@ -467,8 +467,22 @@ def _display_metadata(file_path, extra_data):
     back to a local filename for actual local files.
     """
     extra_data = extra_data if isinstance(extra_data, dict) else {}
-    title = extra_data.get('title') or extra_data.get('音乐名字')
-    artist = extra_data.get('artist') or extra_data.get('歌手')
+    title = next(
+        (
+            text
+            for key in ('title', '音乐名字', 'song_name', 'name')
+            if (text := _safe_text(extra_data.get(key)))
+        ),
+        '',
+    )
+    artist = next(
+        (
+            text
+            for key in ('artist', '歌手', 'artist_name', 'author', 'singer')
+            if (text := _safe_text(extra_data.get(key)))
+        ),
+        '',
+    )
 
     if not title:
         if file_path.startswith(('http://', 'https://')):

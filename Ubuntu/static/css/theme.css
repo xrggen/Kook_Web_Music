@@ -155,8 +155,8 @@ html[data-ui-theme="light"] .account-intro-panel p,
 html[data-ui-theme="light"] .account-benefit small,
 html[data-ui-theme="light"] .account-form-note,
 html[data-ui-theme="light"] .library-card-meta,
-html[data-ui-theme="light"] .health-hero-copy span,
-html[data-ui-theme="light"] .health-card span,
+html[data-ui-theme="light"] .health-hero-copy > div > span,
+html[data-ui-theme="light"] .health-card > span:not(.health-card-icon),
 html[data-ui-theme="light"] .setting-copy span,
 html[data-ui-theme="light"] .settings-note,
 html[data-ui-theme="light"] .status-row span,
@@ -261,6 +261,81 @@ html[data-ui-theme="light"] textarea {
 }
 html[data-ui-theme="light"] .form-control::placeholder,
 html[data-ui-theme="light"] textarea::placeholder { color: #a2aab6; }
+html[data-ui-theme="light"] .form-label { color: #596474; }
+html[data-ui-theme="light"] .input-group > .input-group-text {
+    color: #647080;
+    border-color: var(--app-border);
+    background: #f1f4f8;
+}
+html[data-ui-theme="light"] .form-select option {
+    color: #2d333d;
+    background: #ffffff;
+}
+html[data-ui-theme="light"] .table thead th { color: #667181; }
+html[data-ui-theme="light"] .table tbody td { color: #4f5a69; }
+html[data-ui-theme="light"] .table tbody tr:hover > * { background: #f3f6f9; }
+html[data-ui-theme="light"] .text-primary { color: #5749cf !important; }
+html[data-ui-theme="light"] .text-success { color: #18794e !important; }
+html[data-ui-theme="light"] .text-warning { color: #875713 !important; }
+html[data-ui-theme="light"] .text-info { color: #176d8f !important; }
+html[data-ui-theme="light"] .text-danger { color: #b23848 !important; }
+html[data-ui-theme="light"] .btn-outline-primary,
+html[data-ui-theme="light"] .btn-outline-info {
+    color: #5749cf;
+    border-color: rgba(87,73,207,.42);
+    background: rgba(103,88,231,.04);
+}
+html[data-ui-theme="light"] .btn-outline-primary:hover,
+html[data-ui-theme="light"] .btn-outline-info:hover {
+    color: #ffffff;
+    border-color: #5749cf;
+    background: #6758e7;
+}
+html[data-ui-theme="light"] .btn-outline-secondary,
+html[data-ui-theme="light"] .btn-secondary {
+    color: #596474;
+    border-color: var(--app-border);
+    background: #f7f9fc;
+}
+html[data-ui-theme="light"] .btn-outline-secondary:hover,
+html[data-ui-theme="light"] .btn-secondary:hover {
+    color: #2d333d;
+    border-color: var(--app-border-strong);
+    background: #edf1f6;
+}
+html[data-ui-theme="light"] .btn-outline-danger,
+html[data-ui-theme="light"] .btn-danger {
+    color: #b23848;
+    border-color: rgba(178,56,72,.38);
+    background: rgba(201,76,91,.06);
+}
+html[data-ui-theme="light"] .btn-outline-danger:hover,
+html[data-ui-theme="light"] .btn-danger:hover {
+    color: #ffffff;
+    border-color: #b23848;
+    background: #b23848;
+}
+html[data-ui-theme="light"] .btn-warning,
+html[data-ui-theme="light"] .btn-outline-warning {
+    color: #875713;
+    border-color: rgba(135,87,19,.38);
+    background: rgba(173,118,34,.07);
+}
+html[data-ui-theme="light"] .alert-success {
+    color: #176b45;
+    border-color: rgba(34,154,102,.26);
+    background: rgba(34,154,102,.08);
+}
+html[data-ui-theme="light"] .alert-danger {
+    color: #a93241;
+    border-color: rgba(201,76,91,.26);
+    background: rgba(201,76,91,.08);
+}
+html[data-ui-theme="light"] .alert-warning {
+    color: #80500d;
+    border-color: rgba(173,118,34,.28);
+    background: rgba(173,118,34,.09);
+}
 html[data-ui-theme="light"] .account-profile-panel img {
     border-color: #d6dce5;
     box-shadow: 0 12px 28px rgba(43,53,69,.13);
@@ -274,14 +349,42 @@ html[data-ui-theme="light"] .account-playlist-grid .card {
     border-color: var(--app-border);
     background: #f8fafc;
 }
+html[data-ui-theme="light"] .account-page .account-playlists-panel {
+    border-color: var(--app-border);
+    background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(248,250,252,.98));
+}
+html[data-ui-theme="light"] .account-page .account-playlist-grid .card {
+    --bs-card-bg: #f8fafc;
+    --bs-card-color: #2d333d;
+    color: #2d333d;
+    background-color: #f8fafc;
+    background-image: none;
+}
+html[data-ui-theme="light"] .account-page .account-playlist-grid .card-body {
+    color: #2d333d;
+    background-color: #f8fafc;
+}
 html[data-ui-theme="light"] .account-playlist-grid .card:hover {
     border-color: var(--app-border-strong);
     background: #ffffff;
 }
-html[data-ui-theme="light"] .account-playlist-grid .card-img-top { border-bottom-color: var(--app-border); background: #eef2f7; }
+html[data-ui-theme="light"] .account-page .account-playlist-grid .card:hover .card-body { background-color: #ffffff; }
+html[data-ui-theme="light"] .account-playlist-grid .card-img-top {
+    border-bottom-color: var(--app-border);
+    background: #eef2f7;
+}
+html[data-ui-theme="light"] .account-count-badge {
+    color: #5749cf;
+    background: rgba(103,88,231,.11);
+}
 
 html[data-ui-theme="light"] .library-platform-status { border-color: var(--app-border); color: #737d8c; }
 html[data-ui-theme="light"] .library-platform-status.connected { color: #23845c; background: rgba(34,154,102,.07); }
+html[data-ui-theme="light"] .library-platform-status.error {
+    color: #b23848;
+    border-color: rgba(201,76,91,.24);
+    background: rgba(201,76,91,.07);
+}
 html[data-ui-theme="light"] .library-filter button,
 html[data-ui-theme="light"] .library-card,
 html[data-ui-theme="light"] .library-card-actions button,
@@ -304,9 +407,31 @@ html[data-ui-theme="light"] .health-orb {
     border-color: var(--app-border);
     background: #f1f4f8;
 }
+html[data-ui-theme="light"] .health-orb.ok {
+    color: #18794e;
+    border-color: rgba(34,154,102,.28);
+    background: rgba(34,154,102,.09);
+}
+html[data-ui-theme="light"] .health-orb.warn {
+    color: #875713;
+    border-color: rgba(173,118,34,.29);
+    background: rgba(173,118,34,.10);
+}
+html[data-ui-theme="light"] .health-orb.bad {
+    color: #b23848;
+    border-color: rgba(201,76,91,.28);
+    background: rgba(201,76,91,.09);
+}
+html[data-ui-theme="light"] .health-card-icon.channels { color: #176d8f; background: rgba(23,109,143,.09); }
+html[data-ui-theme="light"] .health-card-icon.playing { color: #5749cf; background: rgba(103,88,231,.10); }
+html[data-ui-theme="light"] .health-card-icon.queue { color: #875713; background: rgba(173,118,34,.10); }
+html[data-ui-theme="light"] .health-card-icon.bot { color: #18794e; background: rgba(34,154,102,.10); }
 html[data-ui-theme="light"] .status-row,
 html[data-ui-theme="light"] .setting-row { border-bottom-color: var(--app-border); }
 html[data-ui-theme="light"] .status-pill { color: #697383; background: #eef2f6; }
+html[data-ui-theme="light"] .status-pill.ok { color: #18794e; background: rgba(34,154,102,.10); }
+html[data-ui-theme="light"] .status-pill.warn { color: #875713; background: rgba(173,118,34,.11); }
+html[data-ui-theme="light"] .status-pill.bad { color: #b23848; background: rgba(201,76,91,.10); }
 html[data-ui-theme="light"] .switch-control span {
     border-color: #cbd3de;
     background: #e4e9f0;
@@ -350,9 +475,34 @@ html[data-ui-theme="light"] .queue-count { color: #5d50d2; background: rgba(103,
 html[data-ui-theme="light"] .search-results-table tbody tr { background: #f8fafc; }
 html[data-ui-theme="light"] .search-results-table tbody tr:hover { border-color: var(--app-border); background: #f1f4f8; }
 html[data-ui-theme="light"] .search-results-table td { color: #697383; }
+html[data-ui-theme="light"] .empty-state-tip { color: #5749c7; }
 html[data-ui-theme="light"] .search-results-table td:first-child::before {
     color: #6758e7;
     background: linear-gradient(145deg, #eef0fb, #e8eaf7);
+}
+html[data-ui-theme="light"] .dashboard-page .add-track-btn {
+    color: #ffffff;
+    border-color: #6758e7;
+    background: linear-gradient(135deg, #6758e7, #7768ee);
+    box-shadow: 0 6px 16px rgba(103,88,231,.20);
+}
+html[data-ui-theme="light"] .dashboard-page .add-track-btn:hover,
+html[data-ui-theme="light"] .dashboard-page .add-track-btn:focus-visible {
+    color: #ffffff;
+    border-color: #5143ca;
+    background: linear-gradient(135deg, #594bd3, #6959df);
+    box-shadow: 0 8px 20px rgba(103,88,231,.27);
+}
+html[data-ui-theme="light"] .dashboard-page .add-track-btn:focus-visible {
+    outline: 3px solid rgba(103,88,231,.20);
+    outline-offset: 2px;
+}
+html[data-ui-theme="light"] .dashboard-page .add-track-btn:disabled {
+    color: #707a89;
+    border-color: #d2d9e3;
+    background: #eef2f7;
+    box-shadow: none;
+    opacity: 1;
 }
 html[data-ui-theme="light"] .search-results-table td:first-child strong,
 html[data-ui-theme="light"] .queue-table td:nth-child(2) strong,
@@ -366,6 +516,14 @@ html[data-ui-theme="light"] .now-playing-text > span,
 html[data-ui-theme="light"] .now-playing-text small,
 html[data-ui-theme="light"] .player-progress > span,
 html[data-ui-theme="light"] .player-live { color: #7a8493; }
+html[data-ui-theme="light"] .dashboard-page .search-results-table td:first-child .track-primary,
+html[data-ui-theme="light"] .dashboard-page .queue-table td:nth-child(2) .track-primary {
+    color: #292f38;
+}
+html[data-ui-theme="light"] .dashboard-page .search-results-table td:first-child .track-secondary,
+html[data-ui-theme="light"] .dashboard-page .queue-table td:nth-child(2) .track-secondary {
+    color: #697383;
+}
 html[data-ui-theme="light"] .queue-table tbody tr:hover { border-color: var(--app-border); background: #f3f6f9; }
 html[data-ui-theme="light"] .queue-footer { border-top-color: var(--app-border); }
 html[data-ui-theme="light"] .dashboard-page .remove-btn { color: #7a8493; border-color: var(--app-border); }
@@ -384,6 +542,21 @@ html[data-ui-theme="light"] .now-playing-art {
 html[data-ui-theme="light"] .control-button { color: #687282; }
 html[data-ui-theme="light"] .control-button:hover:not(:disabled) { color: #252a33; background: #edf1f6; }
 html[data-ui-theme="light"] .control-button.primary { color: #ffffff; }
+html[data-ui-theme="light"] .control-button.mode-toggle.active {
+    color: #5749cf;
+    background: rgba(103,88,231,.11);
+}
+html[data-ui-theme="light"] .playing-indicator.active { color: #5749cf; }
+html[data-ui-theme="light"] .stop-button {
+    color: #b23848;
+    border-color: rgba(178,56,72,.34);
+    background: rgba(201,76,91,.04);
+}
+html[data-ui-theme="light"] .stop-button:hover:not(:disabled) {
+    color: #962a38;
+    border-color: rgba(178,56,72,.50);
+    background: rgba(201,76,91,.10);
+}
 html[data-ui-theme="light"] .dashboard-page .player-progress .progress { background: #dde3eb; }
 html[data-ui-theme="light"] .dashboard-page .player-progress .progress-bar::after {
     background: #ffffff;
@@ -395,4 +568,13 @@ html[data-ui-theme="light"] .toast {
     border-color: var(--app-border-strong) !important;
     background: rgba(255,255,255,.985) !important;
     box-shadow: var(--app-shadow) !important;
+}
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast-message { color: #303744; }
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast-icon { color: #5749cf; }
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast.success .dashboard-toast-icon { color: #18794e; }
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast.error .dashboard-toast-icon { color: #b23848; }
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast-close { color: #687382; }
+html[data-ui-theme="light"] .dashboard-page .dashboard-toast-close:hover {
+    color: #252a33;
+    background: #edf1f6;
 }

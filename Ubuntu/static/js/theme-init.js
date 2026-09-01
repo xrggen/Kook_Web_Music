@@ -4,8 +4,8 @@
     const STORAGE_KEY = 'kook.ui.theme';
     const media = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
     const stylesheets = [
-        ['kook-theme-stylesheet', '/static/css/theme.css?v=1.1'],
-        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=2.0'],
+        ['kook-theme-stylesheet', '/static/css/theme.css?v=1.6'],
+        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=2.2'],
         ['kook-mobile-polish-stylesheet', '/static/css/mobile-polish.css?v=1.0']
     ];
 

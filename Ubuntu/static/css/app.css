@@ -396,15 +396,17 @@ body.app-page textarea { font: inherit; }
 .account-utility-card { margin-top: 16px; }
 
 /* Music library */
-.library-platform-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; margin-bottom: 16px; }
-.library-platform-card { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; align-items: center; gap: 12px; min-height: 82px; padding: 14px; }
+.library-platform-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); grid-auto-rows: 1fr; gap: 12px; margin-bottom: 16px; }
+.library-platform-grid > .surface-panel + .surface-panel { margin-top: 0; }
+.library-platform-card { display: grid; width: 100%; height: 100%; min-width: 0; grid-template-columns: 42px minmax(0,1fr) 80px; align-items: center; gap: 12px; box-sizing: border-box; min-height: 82px; padding: 14px; }
 .library-platform-card .platform-brand { width: 42px; height: 42px; border-radius: 12px; }
+.library-platform-card > div { min-width: 0; }
 .library-platform-card small,
-.library-platform-card strong { display: block; }
+.library-platform-card strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-platform-card small { color: #707986; font-size: .62rem; }
 .library-platform-card strong { margin-top: 3px; color: #edf0f4; font-size: .82rem; }
-.library-platform-status { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px; border: 1px solid #2a313a; border-radius: 999px; color: #7f8894; font-size: .62rem; font-weight: 700; }
-.library-platform-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #626b77; }
+.library-platform-status { display: inline-flex; width: 80px; min-width: 80px; min-height: 28px; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; padding: 0 8px; border: 1px solid #2a313a; border-radius: 999px; color: #7f8894; font-size: .62rem; font-weight: 700; white-space: nowrap; }
+.library-platform-status::before { content: ""; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: #626b77; }
 .library-platform-status.connected { color: #78dfa9; border-color: rgba(67,213,138,.22); background: rgba(67,213,138,.05); }
 .library-platform-status.connected::before { background: var(--app-success); }
 .library-platform-status.error { color: #ef919c; border-color: rgba(228,97,112,.2); }
@@ -434,7 +436,9 @@ body.app-page textarea { font: inherit; }
 /* Runtime status */
 .health-hero { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 20px; padding: 22px; }
 .health-hero-copy { display: flex; align-items: center; gap: 15px; }
-.health-orb { display: grid; width: 52px; height: 52px; place-items: center; border: 1px solid #313945; border-radius: 17px; color: #8d95a1; background: #171c23; font-size: 1.25rem; }
+.health-orb { display: grid; flex: 0 0 52px; width: 52px; height: 52px; place-items: center; border: 1px solid #313945; border-radius: 17px; color: #8d95a1; background: #171c23; }
+.status-symbol { display: block; width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.health-orb .status-symbol { width: 27px; height: 27px; stroke-width: 1.9; }
 .health-orb.ok { color: #70dfa5; border-color: rgba(67,213,138,.26); background: rgba(67,213,138,.07); }
 .health-orb.warn { color: #e7be72; border-color: rgba(228,180,94,.26); background: rgba(228,180,94,.06); }
 .health-orb.bad { color: #ee8f9a; border-color: rgba(228,97,112,.28); background: rgba(228,97,112,.07); }
@@ -443,12 +447,19 @@ body.app-page textarea { font: inherit; }
 .health-hero-copy strong { color: #f1f3f6; font-size: 1rem; }
 .health-hero-copy span { margin-top: 4px; color: #78818e; font-size: .68rem; }
 .health-refresh { color: #6f7884; font-size: .64rem; }
-.health-metric-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-top: 16px; }
-.health-card { min-height: 120px; padding: 17px; }
-.health-card-icon { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 10px; color: #9e96ff; background: rgba(116,103,244,.12); }
+.health-metric-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); grid-auto-rows: 1fr; align-items: stretch; gap: 12px; margin-top: 16px; }
+.health-metric-grid > .surface-panel + .surface-panel,
+.status-detail-grid > .surface-panel + .surface-panel { margin-top: 0; }
+.health-card { display: flex; height: 100%; min-width: 0; min-height: 120px; flex-direction: column; align-items: flex-start; justify-content: flex-start; padding: 17px; }
+.health-card-icon { display: grid; flex: 0 0 38px; width: 38px; height: 38px; place-items: center; align-content: center; justify-content: center; margin-top: 0; border-radius: 11px; color: #9e96ff; background: rgba(116,103,244,.12); }
+.health-card-icon.channels { color: #75c9e9; background: rgba(72,181,221,.11); }
+.health-card-icon.playing { color: #9e96ff; background: rgba(116,103,244,.12); }
+.health-card-icon.queue { color: #e7be72; background: rgba(228,180,94,.10); }
+.health-card-icon.bot { color: #70dfa5; background: rgba(67,213,138,.10); }
 .health-card strong { display: block; margin-top: 13px; color: #eef1f5; font-size: 1.16rem; font-weight: 770; }
-.health-card span { display: block; margin-top: 4px; color: #747d89; font-size: .64rem; }
-.status-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.health-card > span:not(.health-card-icon) { display: block; margin-top: 4px; color: #747d89; font-size: .64rem; }
+.status-detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); align-items: stretch; gap: 16px; margin-top: 16px; }
+.status-detail-grid > .surface-panel { height: 100%; min-width: 0; }
 .status-list { display: grid; }
 .status-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px; min-height: 52px; padding: 0 2px; border-bottom: 1px solid #252c35; }
 .status-row:last-child { border-bottom: 0; }

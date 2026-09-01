@@ -226,9 +226,10 @@ function createLibraryCard(item) {
     fallback.appendChild(fallbackIcon);
     cover.appendChild(fallback);
 
-    if (item.cover) {
+    const normalizedCover = normalizeCoverUrl(item.cover, item.platform);
+    if (normalizedCover) {
         const image = document.createElement('img');
-        image.src = normalizeCoverUrl(item.cover);
+        image.src = normalizedCover;
         image.alt = '';
         image.loading = 'lazy';
         image.referrerPolicy = 'no-referrer';
@@ -307,8 +308,24 @@ function setPlatformStatus(element, text, stateClass) {
     if (stateClass) element.classList.add(stateClass);
 }
 
-function normalizeCoverUrl(value) {
-    if (!value) return '';
-    if (value.startsWith('//')) return `https:${value}`;
-    return value;
+function normalizeCoverUrl(value, platform = '') {
+    let raw = String(value || '').trim();
+    if (!raw) return '';
+
+    const platformBases = {
+        qq: 'https://y.gtimg.cn/',
+        bili: 'https://i0.hdslb.com/'
+    };
+    if (raw.startsWith('//')) raw = `https:${raw}`;
+    else if (/^http:\/\//i.test(raw)) raw = `https://${raw.slice(7)}`;
+    else if (!/^[a-z][a-z0-9+.-]*:/i.test(raw) && platformBases[platform]) {
+        raw = new URL(raw.replace(/^\/+/, ''), platformBases[platform]).href;
+    }
+
+    try {
+        const url = new URL(raw, window.location.origin);
+        return url.protocol === 'https:' || url.origin === window.location.origin ? url.href : '';
+    } catch (_) {
+        return '';
+    }
 }

@@ -16,6 +16,7 @@ import account_api
 import bili_utils
 import qq_credential
 import qq_utils
+import utils
 from secure_storage import secure_write_text
 
 
@@ -141,6 +142,21 @@ class SecurityRegressionTests(unittest.TestCase):
             bili_utils.BILI_COOKIE_TXT_PATH = original_path
             bili_utils._verify_cache.clear()
             bili_utils._verify_cache.update(original_cache)
+
+    def test_playlist_display_accepts_artist_metadata_aliases(self):
+        playlist = utils.format_playlist_data({
+            "now_playing": {
+                "file": "https://example.invalid/playing.mp3",
+                "extra": {"音乐名字": "正在播放", "artist_name": "歌手甲"},
+            },
+            "play_list": [{
+                "file": "https://example.invalid/queued.mp3",
+                "extra": {"title": "下一首", "author": "歌手乙"},
+            }],
+        })
+
+        self.assertEqual(playlist[0]["artist"], "歌手甲")
+        self.assertEqual(playlist[1]["artist"], "歌手乙")
 
 
 if __name__ == "__main__":

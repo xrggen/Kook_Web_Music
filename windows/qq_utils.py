@@ -720,10 +720,18 @@ def get_qq_user_playlists(uin, offset=0, limit=30):
             if not isinstance(pl, dict):
                 continue
             tc, pc = _parse_subtitle(pl.get("subtitle", ""))
+            cover = next(
+                (
+                    pl.get(key)
+                    for key in ("logo", "picurl", "diss_cover", "imgurl", "cover", "pic", "picUrl")
+                    if isinstance(pl.get(key), str) and pl.get(key).strip()
+                ),
+                "",
+            )
             result.append({
                 "id": _safe_text(pl.get("dissid", pl.get("dirid", "")), 64),
                 "name": _safe_text(pl.get("title", pl.get("dissname", "未知歌单"))),
-                "cover": _safe_text(pl.get("picurl", pl.get("diss_cover", pl.get("imgurl", ""))), 2048),
+                "cover": _safe_text(cover, 2048),
                 "trackCount": tc,
                 "playCount": pc,
             })

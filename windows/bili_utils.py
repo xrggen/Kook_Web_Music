@@ -737,7 +737,7 @@ def get_bili_favorite_collections():
                 "id": collection_id,
                 "title": _safe_text(item.get("title", "")),
                 "count": item.get("media_count", 0),
-                "cover": _safe_text(item.get("cover", ""), 2048),
+                "cover": _normalize_bili_pic(item.get("cover", "")),
             })
         logger.info(f"[Bili收藏夹] 共 {len(result)} 个")
         return result

@@ -1,7 +1,12 @@
 function biliSafeImageUrl(value) {
     try {
-        const url = new URL(String(value || ''), window.location.origin);
-        return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+        let raw = String(value || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('//')) raw = `https:${raw}`;
+        else if (/^http:\/\//i.test(raw)) raw = `https://${raw.slice(7)}`;
+        else if (!/^[a-z][a-z0-9+.-]*:/i.test(raw)) raw = new URL(raw.replace(/^\/+/, ''), 'https://i0.hdslb.com/').href;
+        const url = new URL(raw);
+        return url.protocol === 'https:' ? url.href : '';
     } catch (_) {
         return '';
     }
@@ -111,7 +116,7 @@ class BiliAccountManager {
                         });
                     const cover = biliSafeImageUrl(pl.cover);
                     if (cover) {
-                        card.append($('<img>', { class: 'card-img-top', alt: name }).attr('src', cover).on('error', function() { $(this).hide(); }));
+                        card.append($('<img>', { class: 'card-img-top', alt: name, loading: 'lazy', referrerpolicy: 'no-referrer' }).attr('src', cover).on('error', function() { $(this).hide(); }));
                     }
                     card.append(
                         $('<div>', { class: 'card-body p-2' })

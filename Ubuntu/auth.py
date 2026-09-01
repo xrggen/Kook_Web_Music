@@ -136,7 +136,7 @@ USER_API_EXACT = {
     "/api/playlist/promote",
 }
 PUBLIC_PATHS = {"/login", "/healthz", "/favicon.ico"}
-PASSWORD_RE = re.compile(r"^(?=.{12,128}$)(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$")
+PASSWORD_RE = re.compile(r"^(?=.{8,128}$)(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).+$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 
 
@@ -442,7 +442,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def validate_password(password: str) -> str | None:
     if not PASSWORD_RE.match(password or ""):
-        return "密码需为 12–128 位，并同时包含大写字母、小写字母、数字和特殊字符"
+        return "密码需为 8–128 位，并同时包含大写字母、小写字母和特殊字符"
     return None
 
 
