@@ -1,430 +1,186 @@
 # 工程 Handoff
 
-生成日期：2026-09-01
-
-工作分支：`feature/cloud-edge-control-plane`
+当前开发分支：`feature/cloud-edge-control-plane`
 
 基线来源：`refactor/desktop-ui-v2` @ `076ad3d0e3f7461efa6686a0aaa5a12621b650d9`。
 
 > 安全约束：本文以及仓库其他文档不得记录真实 Bot Token、Agent Token、Cookie、Credential、Session/CSRF、管理员明文密码或签名媒体 URL。
 
-## 1. 当前目标架构
+## 当前架构
 
-本分支已经把部署模型从“Web + Bot + Playback 同机”扩展为正式的 Cloud / Edge 分离模式，同时保留原单机入口作为兼容模式。
-
-### Cloud Control Plane
-
-入口：
+当前目标已经从单机 v2 扩展为“双控制面 + 单 Edge Runtime”模式：
 
 ```text
-cloud/run.py
+Cloud Web :443 -----------\
+                            -> Edge Runtime -> KOOK
+Cloud WSS :28470-28479 ---/
+Local Edge WebUI ---------/
+KOOK Bot ----------------/
 ```
 
-职责：
+Cloud 负责公网 Web 用户、Session/RBAC/Scope、审计、状态缓存和 Relay。Edge 保留完整 v2 本地 WebUI、KOOK Bot、PlayHandler、FFmpeg、Node API 与音乐 Credential。
 
-- 公网 Web UI / HTTP API；
-- Web 用户、Session、CSRF、Admin/User、Scope；
-- SQLite IAM / audit；
-- Edge Agent Registry；
-- WSS Relay Hub；
-- Runtime Read Cache；
-- 把现有 `/api/*` Contract 转成严格白名单 RPC。
+## 已收口的最终需求
 
-Cloud 不持有：
+- 公网 Web 与 WSS 不共享 443。
+- 默认 WSS 公网端口池 `28470-28479`。
+- 任意时刻一个 Edge 只维持一条 Active WSS。
+- Active Port 发生网络型失败时在池内自动故障转移。
+- 上次成功端口作为 `preferred_port` 优先复用，其余候选随机化。
+- 全池失败后指数退避 + jitter。
+- `AUTH_FAILED`、TLS 证书错误、协议不匹配不进行无意义的全池轮询。
+- Edge 本地 WebUI 独立于 Cloud，Cloud/WSS 失败不影响本地使用、Bot、当前播放或自动下一首。
+- Edge `/settings` 可配置 Cloud host、端口池、path、TLS、Agent ID/名称和 Token。
+- 修改远程配置只重连 Agent，不重启 Bot/播放核心。
+- Agent Token 独立安全保存，API 只返回是否已配置，不回显原值。
+- 旧 `EDGE_RELAY_URL` 保留首次迁移兼容。
+- Handoff 只维护在 `docs/`，不写根 README。
+
+## 关键实现
 
 ```text
-BOT_TOKEN
-音乐平台 Cookie/Credential
-Node API
-FFmpeg
-PlayHandler
+cloud/run.py                    Cloud 入口
+cloud/app.py                    Cloud Web/Auth/Edge 状态接口
+cloud/relay.py                  单内部 RelayHub
+cloud/Caddyfile.example         443 Web + 28470-28479 WSS ingress
+
+edge/run.py                     Edge 完整本地 WebUI + Runtime 入口
+edge/agent.py                   EdgeAgentSupervisor / PortPool Failover
+edge/config_store.py            动态远程配置 SQLite
+edge/secret_store.py            Agent Token Secret Store
+edge/management.py              本地 Admin 配置/状态 API
+edge/templates/settings.html    Edge 专属 v2 设置页
+edge/static/edge-settings.js    本地远程节点配置交互
+edge/local_control.py           Relay 到现有 loopback API 的兼容桥
+
+shared/relay_protocol.py        唯一远程业务 Action 白名单
 ```
 
-### Edge Runtime
+## 数据归属
 
-入口：
-
-```text
-edge/run.py
-```
-
-职责：
-
-- 根据 OS 选择 `windows/` 或 `Ubuntu/` 现有运行时；
-- 启动网易云 / QQ 本地 Node API；
-- 启动 KOOK Bot；
-- 保留原 `kookvoice`、PlayHandler、FFmpeg、Opus/RTP；
-- Flask API 强制绑定 `127.0.0.1`；
-- Edge Agent 主动通过 WSS 连接 Cloud；
-- 接收 Cloud 业务命令并调用 loopback 现有 API；
-- 周期推送拓扑、播放状态和健康状态。
-
-Edge 不需要公网 IP，也不开放任何公网入站端口。
-
-## 2. 关键设计
-
-### 2.1 通信
-
-```text
-Browser
-  -> HTTPS
-Cloud
-  -> WSS command
-Edge Agent
-  -> 127.0.0.1 Flask API
-Existing Runtime
-```
-
-Edge 主动发起：
-
-```text
-wss://<public-domain>/edge/v1/connect
-```
-
-外部反向代理把该路径转给 Cloud Relay；其他 HTTP 请求转给 Cloud Flask。
-
-### 2.2 Keepalive
-
-不是单独的 keepalive TCP，而是：
-
-```text
-WebSocket ping/pong
-+
-应用层 heartbeat
-+
-指数退避重连
-```
-
-默认：
-
-- application heartbeat：15 秒；
-- runtime state：5 秒；
-- topology/full state：300 秒。
-
-### 2.3 命令协议
-
-唯一协议定义：
-
-```text
-shared/relay_protocol.py
-```
-
-当前版本：
-
-```text
-PROTOCOL_VERSION = 1
-```
-
-只允许 `ACTIONS` 中显式声明的业务动作。
-
-严禁增加：
-
-```text
-shell
-exec
-任意 subprocess
-任意 URL 请求
-任意文件读写
-```
-
-### 2.4 离线语义
-
-Cloud 不对播放写命令做离线排队。
-
-Agent 离线：
-
-```text
-HTTP 503
-EDGE_OFFLINE
-```
-
-命令超时：
-
-```text
-HTTP 504
-EDGE_TIMEOUT
-```
-
-每条命令带 deadline 和唯一 id。Edge 缓存最近 1024 个 result，重复 command id 不重复执行。
-
-## 3. 状态所有权
-
-Edge 始终是运行状态权威源。
-
-Cloud 只保存 Read Cache：
-
-```text
-Guild
-Channel
-Active Channel
-Queue
-Now Playing
-Playback Modes
-Health
-Account Status
-```
-
-高频读取：
-
-```text
-/api/guilds
-/api/channels
-/api/channels/active
-/api/playlist/current
-```
-
-优先使用 Cloud Cache，避免浏览器轮询每次跨公网 RPC。
-
-搜索、账号操作、播放写操作实时走 Edge。
-
-## 4. KOOK Bot 故障隔离
-
-KOOK Bot 完整留在 Edge，并继续直接调用现有平台适配器与 `kookvoice`。
-
-因此 Cloud/WSS 故障时：
-
-```text
-KOOK Bot           正常
-正在播放           正常
-队列自动推进       正常
-FFmpeg/RTP         正常
-Web UI             不可用或显示旧状态
-远程 Web 控制      不可用
-```
-
-不要把 Bot Command 改造成必须经过 Cloud 的 RPC。
-
-## 5. Web 鉴权
-
-Cloud 复用当前成熟的 `windows/auth.py` Auth 实现以及 Windows 共享模板/静态资源。
-
-Cloud SQLite 保存：
-
-```text
-users
-sessions
-login_attempts
-guilds
-channels
-user_scopes
-audit_logs
-schema_migrations
-edge_agents
-edge_agent_guilds
-```
-
-Role/Scope 仍为：
-
-```text
-admin -> global
-user  -> playback.read + playback.control + Global/Guild/Channel Scope
-```
-
-Edge 的 `data/edge_internal.db` 只用于 loopback Agent Service Session，不是 Web 用户数据库。
-
-## 6. Agent 身份
-
-第一版：
-
-```text
-TLS/WSS
-+
-EDGE_AGENT_ID
-+
-EDGE_AGENT_TOKEN >= 32 chars
-```
-
-WebSocket Upgrade：
-
-```http
-Authorization: Bearer <agent token>
-X-Agent-ID: edge-main
-```
-
-Cloud DB 只保存 Agent Token SHA-256。
-
-Agent Token 只能通过部署环境变量/Secret 管理，不进 Git。
-
-## 7. 新增目录
-
-```text
-cloud/
-  __init__.py
-  app.py
-  run.py
-  relay.py
-  runtime_proxy.py
-  agent_registry.py
-  requirements.txt
-  .env.example
-  Caddyfile.example
-
-edge/
-  __init__.py
-  run.py
-  agent.py
-  local_control.py
-  .env.example
-
-shared/
-  __init__.py
-  relay_protocol.py
-
-docs/
-  cloud-edge-architecture.md
-  cloud-edge-deployment.md
-```
-
-## 8. 现有目录的角色
-
-`windows/` / `Ubuntu/` 不再需要复制一份新的 Remote Runtime 实现。
-
-`edge/run.py` 直接复用其成熟代码，因此：
-
-- Bot 指令行为不变；
-- Node API 生命周期不变；
-- QQ Credential lifecycle 不变；
-- Bilibili 直连模式不变；
-- PlayHandler/FFmpeg/RTP 不变；
-- watchdog 不变；
-- 安全加固边界继续生效。
-
-原：
-
-```text
-python windows/run.py
-python Ubuntu/run.py
-```
-
-仍是单机兼容模式。
-
-正式分离部署使用：
-
-```text
-python cloud/run.py
-python edge/run.py
-```
-
-## 9. Cloud 部署关键点
-
-Cloud 只运行单进程第一版：
-
-```text
-1 Flask process
-1 aiohttp Relay event loop
-1 Runtime Read Cache
-```
-
-不要直接启动多个独立 Gunicorn worker，因为 Agent WebSocket 所有权和 Cache 当前不跨进程共享。
-
-Cloud 监听建议：
-
-```text
-127.0.0.1:18473 Flask
-127.0.0.1:18476 Relay
-```
-
-公网只开放 HTTPS 443，由 Caddy/Nginx：
-
-```text
-/edge/v1/connect -> 18476
-其他请求         -> 18473
-```
-
-## 10. Edge 部署关键点
-
-现有平台 `.env` 保留 BOT_TOKEN、Node API、FFmpeg、ALLOW* 和 Credential 配置。
-
-新增 `edge/.env`：
-
-```text
-EDGE_AGENT_ID
-EDGE_AGENT_TOKEN
-EDGE_RELAY_URL
-```
-
-Edge Flask 被代码强制：
-
-```text
-127.0.0.1 only
-```
-
-不允许把 18473/18474/18475 做公网端口映射。
-
-## 11. 数据迁移
-
-如保留当前 Web 用户，停止旧实例后把原：
-
-```text
-windows/data/kook_music.db
-或 Ubuntu/data/kook_music.db
-```
-
-复制到：
+Cloud：
 
 ```text
 cloud/data/kook_music.db
 ```
 
-音乐平台状态仍留在 Edge：
+保存 Web user/session/scope/audit、Agent registry 与 Guild 路由副本。
+
+Edge：
 
 ```text
-.env
-Cookie/
+<platform>/data/kook_music.db
+<platform>/data/edge_config.db
+<platform>/data/edge-agent.secret
+<platform>/Cookie/
 ```
 
-不要把音乐 Cookie 搬到 Cloud。
+Edge 是 Queue、Now Playing、Credential 与媒体执行状态的权威源。
 
-## 12. 当前验证状态
+## WSS 网络边界
 
-按项目所有者要求，本次 Cloud/Edge 实现：
+公网：
 
-- 没有创建 PR；
-- 没有创建或主动运行 CI；
-- 没有修改现有 GitHub Actions；
-- 新架构质检留给其他 Agent 或人工执行。
+```text
+443/tcp          Cloud Web
+28470-28479/tcp  Edge WSS ingress pool
+```
 
-本分支新增代码集中在 `cloud/`、`edge/`、`shared/` 和 `docs/`，没有为了 Remote 架构改写 Windows/Ubuntu 播放核心。
+Cloud 内部：
 
-后续质检至少应执行：
+```text
+127.0.0.1:18473  Flask
+127.0.0.1:18476  RelayHub
+```
 
-1. Python compile；
-2. `shared/relay_protocol.py` Action/path 一致性；
-3. Cloud/Edge 同机 `ws://` 联调；
-4. Caddy/Nginx `wss://` 联调；
-5. Admin/User/Scope；
-6. 三平台搜索/账号/歌单；
-7. join/play/pause/resume/skip/seek/promote/clear；
-8. Cloud 断网时 Bot/Playback 连续性；
-9. Edge 重连后的 full state 恢复；
-10. Agent Token 错误/禁用/重复连接；
-11. 超时命令不延迟执行；
-12. 日志与 WSS 中不存在 Credential 泄漏。
+Edge 默认：
 
-## 13. 推荐阅读顺序
+```text
+127.0.0.1:18473  Local WebUI
+127.0.0.1:18474  NetEase API
+127.0.0.1:18475  QQ API
+```
+
+Edge 只主动建立出站 WSS，不需要公网 IP 或入站映射。
+
+## 本地 WebUI
+
+`edge/run.py` 继续复用现有 Windows/Ubuntu v2 页面和业务，因此本地保留：
+
+- Dashboard/播放
+- 音乐库
+- 网易/QQ/Bilibili 账号
+- 系统状态
+- 用户管理
+- 桌面/移动布局
+- 深色/浅色/跟随系统
+- Edge 专属远程节点设置
+
+默认 `EDGE_LOCAL_WEB_HOST=127.0.0.1`。需要 LAN 访问时可显式改为 `0.0.0.0`，但 Auth/CSRF 不关闭。
+
+## Edge 动态配置
+
+`.env` 只作为首次 bootstrap。运行后的动态配置以 `edge_config.db` 为准；Agent Token 单独保存为 `edge-agent.secret`。
+
+UI 支持：
+
+```text
+启用/停用远程控制
+Cloud Host
+WSS Port Start/End
+WSS Path
+TLS Verify
+Agent ID / Name
+更新 Agent Token
+检测端口池
+保存并重新连接
+立即重连
+```
+
+端口池检测使用未认证 HTTPS 请求验证 TCP/TLS/HTTP ingress 可达性，避免用第二条同 Agent 的认证 WSS 把正式连接挤下线。
+
+## 故障模型
+
+Cloud/WSS 故障：本地 WebUI、KOOK Bot、正在播放、队列推进、FFmpeg 和音乐平台继续工作；只有公网远程 UI 控制不可用或显示旧缓存。
+
+Edge 故障：Cloud Web/Auth 仍可用，但运行时写操作返回 Edge Offline。
+
+Cloud 不保存并延迟执行播放命令。
+
+## 安全边界
+
+远程协议不得增加 shell、exec、任意 subprocess、任意 URL proxy 或任意文件读写。Agent Token 不进入 URL/query/log，Cloud Registry 只保存 Hash，Edge Secret 不通过读取 API 回显。
+
+## 当前质检状态
+
+按项目所有者要求，本轮实现：
+
+- 不创建 PR；
+- 不创建、修改或主动运行 CI；
+- 不声明已经完成生产质检。
+
+后续由其他 Agent 或人工至少覆盖：
+
+1. Windows/Ubuntu `edge/run.py` 启动与 Local WebUI 登录。
+2. 本地 v2 播放、音乐库、三平台账号与用户管理。
+3. Cloud 443 Web 与 28470-28479 WSS 分离。
+4. Active Port 被防火墙阻断后的自动切换。
+5. 全池阻断时 Bot/播放/Local WebUI 持续工作。
+6. Token 错误停止无意义端口轮询。
+7. 本地设置修改 Cloud/端口池后播放不中断。
+8. Cloud 与 Local 双控制面操作同一 Queue。
+9. Edge 重连后 `state.full` 恢复 Cloud Read Cache。
+10. Secret、日志、数据库、WSS payload 的敏感信息审计。
+
+## 推荐阅读顺序
 
 1. `docs/HANDOFF.md`
 2. `docs/cloud-edge-architecture.md`
 3. `docs/cloud-edge-deployment.md`
 4. `shared/relay_protocol.py`
-5. `cloud/relay.py`
-6. `cloud/runtime_proxy.py`
+5. `edge/config_store.py`
+6. `edge/secret_store.py`
 7. `edge/agent.py`
-8. `edge/local_control.py`
-9. `edge/run.py`
-10. `docs/security-hardening.md`
-
-## 14. 后续扩容方向
-
-当前 Cloud 为单实例。
-
-真正需要多 Cloud Worker / HA 时，再引入：
-
-```text
-Redis 或 NATS
-Agent connection ownership
-Command correlation bus
-Shared Runtime Read Model
-```
-
-不要在当前版本直接用多 worker 共享同一个公网域名，否则请求可能落到不持有对应 Agent WebSocket 的进程。
+8. `edge/management.py`
+9. `cloud/relay.py`
+10. `cloud/runtime_proxy.py`
