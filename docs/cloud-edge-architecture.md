@@ -7,7 +7,7 @@
 - Cloud：公网 HTTPS Web、Web Auth/RBAC/Scope、审计、Runtime Read Cache、WSS Relay。
 - Edge：本地 WebUI、KOOK Bot、PlayHandler、FFmpeg、网易/QQ/Bilibili、Cookie/Credential。
 - Edge 只需要出站 Internet，不需要公网 IP，也不开放入站 WSS。
-- Cloud Web 与 Edge WSS 不共享公网端口：Web 使用 443，WSS 默认使用 `28470-28479` 端口池。
+- Cloud Web 与 Edge WSS 均使用独立非标准公网端口：Web 默认使用 `28443/tcp`，WSS 默认使用 `28470-28479/tcp` 端口池。
 - 一个 Edge 任意时刻只维持一条 Active WSS；端口池是候选池，不是并发连接池。
 - Cloud/WSS 故障不影响 Edge 本地 WebUI、KOOK Bot、当前播放与自动下一首。
 
@@ -19,7 +19,7 @@ flowchart LR
     L[局域网/本机 Browser]
 
     subgraph CLOUD["Cloud"]
-      WEB[HTTPS Web :443]
+      WEB[HTTPS Web :28443]
       AUTH[Auth/RBAC/Scope]
       CACHE[Runtime Read Cache]
       PROXY[WSS TLS ingress :28470-28479]
@@ -52,6 +52,20 @@ flowchart LR
     RT --> MUSIC
 ```
 
+公网用户正式访问地址形态为：
+
+```text
+https://<cloud-domain>:28443/
+```
+
+Cloud Flask 本身仍只监听：
+
+```text
+127.0.0.1:18473
+```
+
+`28443` 仅由 Caddy/Nginx 等反向代理对公网监听并转发到 `18473`。
+
 ## 三条控制路径
 
 ```text
@@ -61,6 +75,26 @@ KOOK Bot ---------------------------> Edge Runtime
 ```
 
 三条路径共享同一个 Queue、PlayHandler 和音乐凭据，不复制播放状态。
+
+## 公网端口边界
+
+默认公网端口：
+
+```text
+28443/tcp         Cloud HTTPS WebUI
+28470-28479/tcp   Edge WSS ingress pool
+```
+
+内部端口：
+
+```text
+127.0.0.1:18473   Cloud Flask
+127.0.0.1:18476   Cloud RelayHub
+```
+
+项目不再把 `443/tcp` 作为 Cloud Web 正式业务入口。
+
+如果使用 Caddy 自动申请和续期公网 TLS 证书，推荐额外允许 `80/tcp` 供 ACME HTTP-01 challenge 使用。`80/tcp` 是证书验证用途，不是 Cloud Web 正式访问端口。若使用 DNS challenge 或人工部署证书，可以根据证书方案关闭 80。
 
 ## WSS 端口池
 
@@ -138,6 +172,17 @@ Cloud 离线时不排队播放命令；Edge 离线时 Cloud 返回 `EDGE_OFFLINE
 远程协议只允许 `shared/relay_protocol.py` 中的业务 Action。禁止新增 shell、exec、任意 subprocess、任意 URL proxy 或任意文件读写。
 
 Cloud 不持久化 BOT_TOKEN、音乐 Cookie、QQ refresh token 或 Bilibili SESSDATA。
+
+公网防火墙不要开放：
+
+```text
+18473
+18474
+18475
+18476
+```
+
+Edge 也不需要公网入站端口。
 
 ## 当前扩展边界
 
