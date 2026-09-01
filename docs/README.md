@@ -15,8 +15,10 @@
 
 ## 当前核心事实
 
-- 公网 Web UI 使用 HTTPS 443。
-- Edge WSS 使用独立非标准公网端口池，默认 `28470-28479`。
+- 公网 Cloud Web UI 使用独立非标准 HTTPS 端口，默认 `28443/tcp`，正式访问地址为 `https://<domain>:28443/`。
+- 项目不再把 `443/tcp` 作为 Cloud Web 正式业务入口。
+- Edge WSS 使用另一组独立非标准公网端口池，默认 `28470-28479/tcp`。
+- 使用 Caddy 自动申请/续期证书时，推荐额外开放 `80/tcp` 供 ACME HTTP-01 challenge 使用；80 不是正式业务入口。
 - Edge 任意时刻只维持一条 Active WSS，并在网络型端口故障时自动切换。
 - Edge 保留完整 v2 本地 WebUI；Cloud/WSS 不是本地 Bot/播放能力的运行前提。
 - Edge 本地设置页可维护 Cloud 主机、WSS 端口池、Agent 身份/TLS/Token。
@@ -28,8 +30,8 @@
 | 文档 | 负责内容 |
 |---|---|
 | [HANDOFF.md](HANDOFF.md) | 当前工程交接、关键实现、运行数据、质检边界 |
-| [cloud-edge-architecture.md](cloud-edge-architecture.md) | 双控制面、WSS 端口池、Agent Supervisor、状态同步、故障与安全边界 |
-| [cloud-edge-deployment.md](cloud-edge-deployment.md) | 面向零基础部署人员的完整 Cloud/Edge 安装、域名、DNS、防火墙、Caddy、443 Web、28470-28479 WSS、Windows/Ubuntu Edge、本地 WebUI、验证、排错、备份、升级和回滚步骤 |
+| [cloud-edge-architecture.md](cloud-edge-architecture.md) | 双控制面、28443 Web、WSS 端口池、Agent Supervisor、状态同步、故障与安全边界 |
+| [cloud-edge-deployment.md](cloud-edge-deployment.md) | 面向零基础部署人员的完整 Cloud/Edge 安装、域名、DNS、防火墙、Caddy、28443 Web、28470-28479 WSS、Windows/Ubuntu Edge、本地 WebUI、验证、排错、备份、升级和回滚步骤 |
 | [security-hardening.md](security-hardening.md) | 深度审计问题、修复与验证证据 |
 | [architecture.md](architecture.md) | 单机兼容模式与播放核心 |
 | [deployment.md](deployment.md) | Windows/Ubuntu 单机兼容部署 |
