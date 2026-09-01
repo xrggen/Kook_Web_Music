@@ -26,6 +26,7 @@ Ubuntu/debug.log
 *.keystore
 *.session
 *.session-journal
+*.secret
 *credentials*.json
 *secrets*.json
 
