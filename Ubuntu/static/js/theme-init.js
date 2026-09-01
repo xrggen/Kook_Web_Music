@@ -5,8 +5,8 @@
     const media = window.matchMedia?.('(prefers-color-scheme: dark)') || null;
     const stylesheets = [
         ['kook-theme-stylesheet', '/static/css/theme.css?v=1.6'],
-        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=2.2'],
-        ['kook-mobile-polish-stylesheet', '/static/css/mobile-polish.css?v=1.0']
+        ['kook-mobile-stylesheet', '/static/css/mobile.css?v=2.3'],
+        ['kook-mobile-polish-stylesheet', '/static/css/mobile-polish.css?v=1.1']
     ];
 
     function ensureResources() {

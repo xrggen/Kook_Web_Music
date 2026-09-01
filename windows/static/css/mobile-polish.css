@@ -78,10 +78,15 @@
     body.mobile-more-open::before {
         content: "";
         position: fixed;
-        z-index: 123;
+        z-index: 110;
         inset: 0 0 calc(var(--mobile-nav-height) + env(safe-area-inset-bottom)) 0;
         background: rgba(0, 0, 0, .32);
-        backdrop-filter: blur(1px);
+    }
+
+    body.mobile-more-open .mobile-bottom-nav {
+        background: var(--app-bg-soft);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
     }
 
     .global-player .now-playing-copy { cursor: pointer; outline: none; }
