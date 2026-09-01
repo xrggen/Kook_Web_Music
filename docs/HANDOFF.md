@@ -11,7 +11,7 @@
 当前目标已经从单机 v2 扩展为“双控制面 + 单 Edge Runtime”模式：
 
 ```text
-Cloud Web :443 -----------\
+Cloud Web :28443 ---------\
                             -> Edge Runtime -> KOOK
 Cloud WSS :28470-28479 ---/
 Local Edge WebUI ---------/
@@ -22,7 +22,9 @@ Cloud 负责公网 Web 用户、Session/RBAC/Scope、审计、状态缓存和 Re
 
 ## 已收口的最终需求
 
-- 公网 Web 与 WSS 不共享 443。
+- Cloud 公网 Web 不使用标准 443，默认改为 `28443/tcp`。
+- 公网正式 Web 地址为 `https://<cloud-domain>:28443/`。
+- 公网 Web 与 WSS 使用不同的非标准端口。
 - 默认 WSS 公网端口池 `28470-28479`。
 - 任意时刻一个 Edge 只维持一条 Active WSS。
 - Active Port 发生网络型失败时在池内自动故障转移。
@@ -42,7 +44,7 @@ Cloud 负责公网 Web 用户、Session/RBAC/Scope、审计、状态缓存和 Re
 cloud/run.py                    Cloud 入口
 cloud/app.py                    Cloud Web/Auth/Edge 状态接口
 cloud/relay.py                  单内部 RelayHub
-cloud/Caddyfile.example         443 Web + 28470-28479 WSS ingress
+cloud/Caddyfile.example         28443 Web + 28470-28479 WSS ingress
 
 edge/run.py                     Edge 完整本地 WebUI + Runtime 入口
 edge/agent.py                   EdgeAgentSupervisor / PortPool Failover
@@ -77,14 +79,22 @@ Edge：
 
 Edge 是 Queue、Now Playing、Credential 与媒体执行状态的权威源。
 
-## WSS 网络边界
+## 公网与内部网络边界
 
-公网：
+公网正式业务端口：
 
 ```text
-443/tcp          Cloud Web
-28470-28479/tcp  Edge WSS ingress pool
+28443/tcp         Cloud HTTPS Web
+28470-28479/tcp   Edge WSS ingress pool
 ```
+
+如果使用 Caddy 自动申请/续期公网 TLS 证书，推荐同时允许：
+
+```text
+80/tcp            ACME HTTP-01 challenge
+```
+
+`80/tcp` 只用于证书验证，不是正式 Web 业务入口。项目不再要求 `443/tcp` 作为 Cloud Web 访问端口。
 
 Cloud 内部：
 
@@ -101,7 +111,7 @@ Edge 默认：
 127.0.0.1:18475  QQ API
 ```
 
-Edge 只主动建立出站 WSS，不需要公网 IP 或入站映射。
+不要公网开放 `18473-18476`。Edge 只主动建立出站 WSS，不需要公网 IP 或入站映射。
 
 ## 本地 WebUI
 
@@ -163,14 +173,15 @@ Cloud 不保存并延迟执行播放命令。
 
 1. Windows/Ubuntu `edge/run.py` 启动与 Local WebUI 登录。
 2. 本地 v2 播放、音乐库、三平台账号与用户管理。
-3. Cloud 443 Web 与 28470-28479 WSS 分离。
-4. Active Port 被防火墙阻断后的自动切换。
-5. 全池阻断时 Bot/播放/Local WebUI 持续工作。
-6. Token 错误停止无意义端口轮询。
-7. 本地设置修改 Cloud/端口池后播放不中断。
-8. Cloud 与 Local 双控制面操作同一 Queue。
-9. Edge 重连后 `state.full` 恢复 Cloud Read Cache。
-10. Secret、日志、数据库、WSS payload 的敏感信息审计。
+3. Cloud `28443` Web 与 `28470-28479` WSS 分离。
+4. `https://<domain>:28443/` 公网 HTTPS 访问与证书续期。
+5. Active Port 被防火墙阻断后的自动切换。
+6. 全池阻断时 Bot/播放/Local WebUI 持续工作。
+7. Token 错误停止无意义端口轮询。
+8. 本地设置修改 Cloud/端口池后播放不中断。
+9. Cloud 与 Local 双控制面操作同一 Queue。
+10. Edge 重连后 `state.full` 恢复 Cloud Read Cache。
+11. Secret、日志、数据库、WSS payload 的敏感信息审计。
 
 ## 推荐阅读顺序
 
