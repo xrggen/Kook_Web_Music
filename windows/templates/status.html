@@ -8,6 +8,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet" integrity="sha384-l4UPAMHGzl7zwogLW4nOwaU2XTk6oiM1jhCRQstZEndoIiA2I5bg6fST3wzBSRBD" crossorigin="anonymous">
     <link href="{{ url_for('static', filename='css/style.css', v='3.0') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/app.css', v='1.1') }}" rel="stylesheet">
+    {% include '_app_early_ui.html' %}
 </head>
 <body class="app-page status-page">
     <div class="music-app-shell">
@@ -117,7 +118,6 @@
         </main>
     </div>
 
-    <script src="{{ url_for('static', filename='js/app-ui.js', v='1.0') }}"></script>
     <script src="{{ url_for('static', filename='js/status.js', v='1.0') }}"></script>
 </body>
 </html>

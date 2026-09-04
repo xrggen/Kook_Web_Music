@@ -46,11 +46,20 @@ class RuntimeProxy:
         return body if isinstance(body, dict) else {}
 
     def _cache_response(self, agent_id: str, action: str):
+        connected = self.hub.is_connected(agent_id)
+        # Active-channel state changes immediately after join/leave. Returning the
+        # last periodic Edge snapshot while the Edge is online leaves the Cloud UI
+        # with stale button state (for example, "离开频道" stays disabled after a
+        # successful join). Query the live Edge for this action; keep the cached
+        # snapshot only as an offline fallback.
+        if action == "channel.active" and connected:
+            return None
+
         state = self.hub.state_snapshot(agent_id)
         if not state:
             return None
         age = time.time() - float(state.get("last_event_at") or 0.0)
-        if age > self.cache_max_age and self.hub.is_connected(agent_id):
+        if age > self.cache_max_age and connected:
             return None
         full = state.get("full") or {}
         runtime = state.get("runtime") or {}
@@ -58,24 +67,24 @@ class RuntimeProxy:
         if action == "guild.list":
             guilds = full.get("guilds")
             if isinstance(guilds, list):
-                return {"success": True, "guilds": guilds, "edge_stale": not self.hub.is_connected(agent_id)}
+                return {"success": True, "guilds": guilds, "edge_stale": not connected}
         if action == "channel.list":
             guild_id = str(request.args.get("guild_id", ""))
             channels = (full.get("channels") or {}).get(guild_id)
             if isinstance(channels, list):
-                return {"success": True, "channels": channels, "edge_stale": not self.hub.is_connected(agent_id)}
+                return {"success": True, "channels": channels, "edge_stale": not connected}
         if action == "channel.active":
             guild_id = str(request.args.get("guild_id", ""))
             active = (runtime.get("active") or {}).get(guild_id)
             if isinstance(active, dict):
-                return {"success": True, "active": active, "edge_stale": not self.hub.is_connected(agent_id)}
+                return {"success": True, "active": active, "edge_stale": not connected}
         if action == "playlist.current":
             channel_id = str(request.args.get("channel_id", ""))
             playlist = (runtime.get("playlists") or {}).get(channel_id)
             if isinstance(playlist, dict):
                 response = dict(playlist)
                 response.setdefault("success", True)
-                response["edge_stale"] = not self.hub.is_connected(agent_id)
+                response["edge_stale"] = not connected
                 return response
         return None
 
