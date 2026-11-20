@@ -32,6 +32,8 @@ python windows/run.py
 
 需要接入 Cloud 时，先结束单机实例，按 [Cloud / Edge 部署](../docs/cloud-edge-deployment.md)配置 `edge/.env`，再执行 `python edge/run.py`。在 CMD 也可以执行仓库根目录的 `start-edge.cmd`。
 
+启动后可对照 [Web 与小程序截图](../README.md#界面预览)，并用 [KOOK 指令示例](../README.md#kook-指令示例) 验证机器人。
+
 ## 本机启动过程
 
 ```mermaid

@@ -35,6 +35,8 @@ curl -fsS http://127.0.0.1:18473/healthz
 
 接入远程控制时，先停止单机实例，按 [Cloud / Edge 部署](../docs/cloud-edge-deployment.md)配置 `edge/.env`，再从仓库根目录运行 `python edge/run.py`。需要开机自启时，使用 [systemd 示例](../docs/deployment.md#systemd)。
 
+启动后可对照 [Web 与小程序截图](../README.md#界面预览)，并用 [KOOK 指令示例](../README.md#kook-指令示例) 验证机器人。
+
 ## 本机运行关系
 
 ```mermaid

@@ -12,6 +12,8 @@
 node --test wechat-tests/kook-native.test.js wechat-tests/kook-mobile.test.js
 ```
 
+查看 [微信开发者工具截图](../README.md#微信小程序)，了解播放页和音乐库的布局。
+
 ## 交互及数据边界
 
 首次使用控制台账号密码登录，并完成首次改密。用户可在“我的”中主动绑定微信，下次显式选择“微信免密登录”。解除绑定后，后续免密登录需要重新绑定。相关流程和错误码见 [Web API](../docs/web-api.md#微信关联接口)。

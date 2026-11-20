@@ -23,6 +23,40 @@ KOOK Web Music 是可自托管的音乐机器人和控制台。它能在 KOOK �
 
 安装、初始化、长期运行及升级见 [部署说明](docs/deployment.md)。
 
+## 界面预览
+
+### Web 控制台
+
+播放页可选择服务器和语音频道、搜索三平台内容、调整待播顺序。音乐库集中展示已连接平台的歌单和收藏夹。截图使用演示数据。
+
+![Web 播放页，显示频道、三平台搜索、待播队列和底部播放器](docs/screenshots/web-playback.jpg)
+
+[查看 Web 音乐库截图](docs/screenshots/web-library.jpg)
+
+### 微信小程序
+
+微信开发者工具中的演示数据展示了展开播放器与音乐库。小程序的集成方式见 [微信小程序控制台](wechat-miniapp/README.md)。
+
+<p>
+  <img src="docs/screenshots/wechat-player.png" width="300" alt="微信小程序展开播放器，显示当前曲目和播放控制">
+  <img src="docs/screenshots/wechat-library.png" width="300" alt="微信小程序音乐库，显示平台连接和收藏的歌单">
+</p>
+
+## KOOK 指令示例
+
+先加入目标语音频道，再在机器人允许接收指令的文字频道发送命令。
+
+| 指令 | 用途 |
+| --- | --- |
+| `/ping` | 检查机器人是否响应，正常会回复 `pong!` |
+| `/加入` | 让机器人加入你所在的语音频道 |
+| `/wy 晴天` | 从网易云搜索并播放 |
+| `/qq 稻香` | 从 QQ 音乐搜索并播放 |
+| `/bili 钢琴练习曲` | 搜索并播放 Bilibili 音频 |
+| `/播放列表 1` | 查看队列第一页 |
+| `/暂停`、`/继续`、`/跳过` | 控制当前播放 |
+| `/帮助` | 查看完整指令 |
+
 ## 系统架构
 
 ```mermaid
