@@ -28,6 +28,7 @@ class WatchdogEvaluator:
     """无副作用的健康判定器，便于覆盖全部超时和恢复路径。"""
 
     NON_RECOVERABLE_STATES = {"configuration_error"}
+    ISOLATED_DEPENDENCIES = {"netease_api", "qq_music_api"}
 
     def __init__(self, config=None):
         self.config = config or WatchdogConfig()
@@ -69,6 +70,12 @@ class WatchdogEvaluator:
         if not reasons:
             self.consecutive_failures = 0
             return WatchdogDecision("healthy", (), 0, False, False)
+
+        # API subprocesses have their own repair loop. Even persistent provider
+        # failures must not tear down an otherwise healthy voice session/queue.
+        if all(reason.split(":", 1)[0] in self.ISOLATED_DEPENDENCIES for reason in reasons):
+            self.consecutive_failures = 0
+            return WatchdogDecision("degraded", reasons, 0, False, False)
 
         self.consecutive_failures += 1
         blocked = snapshot.bot_state in self.NON_RECOVERABLE_STATES

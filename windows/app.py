@@ -50,6 +50,7 @@ try:
     from .kookvoice.requestor import VoiceRequestor
     from .config import *
     from .runtime_health import runtime_health
+    from .bot_gateway import install_gateway_monitor
     from .utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue, load_cookie_header
     from .qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from .bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
@@ -58,6 +59,7 @@ except ImportError:
     from kookvoice.requestor import VoiceRequestor
     from config import *
     from runtime_health import runtime_health
+    from bot_gateway import install_gateway_monitor
     from utils import search_music, get_music_url, get_playlist, get_playlist_urls, refill_playlist_queue, load_cookie_header
     from qq_utils import search_qq_music, get_qq_music_url, get_qq_playlist, get_qq_playlist_urls, refill_qq_playlist_queue, verify_qq_cookie, get_qq_user_playlists, _format_expiry
     from bili_utils import search_bili_music, get_bili_play_url, get_bili_favorite_collections, get_bili_favorite_all_tracks, refill_bili_playlist_queue, search_bili_bvid, verify_bili_cookie, get_bili_user_info
@@ -130,28 +132,43 @@ bot = Bot(
 )
 
 
+_gateway_monitor = None
+
+
 def _install_gateway_activity_probe():
-    """把任意 KOOK 网关数据包（包括 Pong）记录为连接活动。"""
+    """验证 KOOK 握手/心跳，并在重连信令或超时后恢复 WebSocket。"""
+    global _gateway_monitor
     receiver = getattr(getattr(bot.client, "gate", None), "receiver", None)
-    original = getattr(receiver, "_handle_raw", None)
-    if receiver is None or original is None:
+    if receiver is None or not hasattr(receiver, "_connect_gateway_and_handle_msg"):
         logger.warning("[机器人] 当前 khl.py 版本不支持网关活动探针")
         return False
-    if getattr(receiver, "_kook_music_health_probe", False):
-        runtime_health.mark_gateway_probe_available()
-        return True
-
-    async def _monitored_handle_raw(raw):
-        runtime_health.mark_gateway_activity()
-        return await original(raw)
-
-    receiver._handle_raw = _monitored_handle_raw
-    receiver._kook_music_health_probe = True
-    runtime_health.mark_gateway_probe_available()
-    return True
+    _gateway_monitor = install_gateway_monitor(receiver, runtime_health, logger)
+    return _gateway_monitor is not None
 
 
 _install_gateway_activity_probe()
+
+
+def _write_bot_diagnostics():
+    """可选的非敏感运行快照；不记录消息、ID、凭据或网关 URL。"""
+    path = os.environ.get("KOOK_BOT_DIAGNOSTICS_PATH", "").strip()
+    if not path:
+        return
+    health = runtime_health.snapshot()
+    payload = {
+        "updated_at": time.time(), "bot_state": health.bot_state,
+        "loop_heartbeat_age": health.age(health.loop_heartbeat_at),
+        "gateway_heartbeat_age": health.age(health.gateway_heartbeat_at),
+        "gateway": _gateway_monitor.snapshot() if _gateway_monitor else None,
+        "command_access": {"guild_count": len(ALLOWGROUP), "channel_count": len(ALLOWCHANNEL),
+                           "user_count": len(ALLOWUSER), "unrestricted": bool(BOT_ALLOW_UNRESTRICTED)},
+    }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True)
+    except OSError as exc:
+        logger.warning("[机器人] 非敏感诊断快照写入失败: %s", type(exc).__name__)
 
 # ========== 权限白名单 ==========
 def _is_allowed(msg: Message) -> bool:
@@ -177,14 +194,15 @@ def _is_allowed(msg: Message) -> bool:
 _original_handle = bot.command.handle
 
 async def _patched_handle(loop, client, msg: Message, *args, **kwargs):
-    if not _is_allowed(msg):
-        command_name = str(msg.content).split(maxsplit=1)[0][:32]
-        logger.info(
-            "[权限] 拒绝: 用户=%s 频道=%s 服务器=%s 指令=%s",
-            msg.author_id, msg.ctx.channel.id, msg.ctx.guild.id,
-            command_name,
-        )
+    allowed = _is_allowed(msg)
+    if _gateway_monitor:
+        _gateway_monitor.record_message(allowed)
+    _write_bot_diagnostics()
+    if not allowed:
+        logger.info("[权限] 拒绝 Bot 文字消息（现有白名单规则）")
         return
+    if str(msg.content).startswith('/'):
+        logger.info("[指令入口] 收到指令，交由解析器处理")
     return await _original_handle(loop, client, msg, *args, **kwargs)
 
 bot.command.handle = _patched_handle
@@ -1513,6 +1531,7 @@ def start_bot_loop():
         async def _heartbeat_task():
             while True:
                 runtime_health.mark_loop_heartbeat()
+                _write_bot_diagnostics()
                 try:
                     _write_heartbeat(BOT_HEARTBEAT_FILE)
                 except Exception:
@@ -1591,6 +1610,7 @@ def debug():
             "bot_loop_heartbeat_age": loop_age,
             "kook_gateway_probe_available": health.gateway_probe_available,
             "kook_gateway_heartbeat_age": gateway_age,
+            "kook_gateway": _gateway_monitor.snapshot() if _gateway_monitor else None,
             "active_guilds": active_guilds,
             "playing_songs": playing_songs,
             "queued_songs": queued_songs,

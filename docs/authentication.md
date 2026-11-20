@@ -6,6 +6,16 @@
 
 ## 身份与角色
 
+### 原生小程序与旧Web兼容
+
+`/login`、`/change-password`和`/logout`支持JSON格式。密码登录继续使用原有 Session、Hash、Role/Scope、CSRF、限速与首次改密规则。旧form提交仍使用原HTML错误页/重定向。JSON成功响应协议为`kook-wechat-v1`，仅返回脱敏用户和本次CSRF，Session仍经HttpOnly Cookie传递。
+
+原生页由`wechat-miniapp/`独立维护，Session/CSRF只保存在进程内存；重启后重新登录。仅持久保存用户名及非秘密的界面偏好，不保存密码，也不把Session/CSRF加入Page.data或持久缓存。前台通过`/api/auth/session`核验身份；换用户、失效或退出清除上次频道、歌曲、音乐库与管理视图。相同用户回前台时，仅恢复后端仍允许的资源选择，不自动加入或播放。
+
+完整移动端移植继续区分管理员与普通用户。管理员方法在客户端先做角色检查，服务端Role/Scope/CSRF仍为最终权限边界。平台Cookie、验证码和QR登录参数只在必要的私有内存中使用，后台/页面切换清除；QR图片用于当次扫码展示。临时密码只在创建/重置成功后本次显示，后台隐藏。管理员自重置时注销本机会话，将这一次临时密码保留在登录页，避免立即重载用户列表的401导致密码丢失。
+
+Cloud实际导入`windows/auth.py`；Ubuntu源码镜像继续同步，但本批现网只更新Cloud这一个认证文件。不更新Edge、DB、环境变量、证书、端口或其他项目。首次改密属于用户本人操作，自动验收只使用临时DB和假账号，不代替用户改生产密码。
+
 当前固定两种角色：
 
 - `admin`：全局管理员。可访问播放、音乐账号、系统状态、用户管理、设置和管理 API。
@@ -61,11 +71,25 @@ data/kook_music.db
 - `users`：内部 `id INTEGER PRIMARY KEY`，`username` 唯一；保存密码哈希、角色、启用状态、首次改密状态和 `auth_version`。
 - `sessions`：保存 Session Token Hash、CSRF Hash、认证版本、空闲/绝对过期时间、IP 和 User-Agent 元数据。
 - `login_attempts`：登录失败限速依据。
+- `wechat_bindings`：微信小程序身份摘要与本地用户的双向唯一关联。用户删除时级联清除；不保存原始 OpenID、`session_key` 或登录 `code`。
+- `wechat_exchange_attempts`：微信凭证兑换的独立来源 IP 限速，保存时间和来源 IP，不保存微信身份。
 - `guilds`：KOOK Guild 映射。
 - `channels`：KOOK Channel 映射并通过 FK 归属 Guild。
 - `user_scopes`：关联用户与 playback Domain 的 Global/Guild/Channel 范围。
 - `audit_logs`：认证、IAM 和成功写 API 的审计记录。
 - `schema_migrations`：Schema 版本。
+
+微信关联使用 SQLite Schema 4，从版本 3 追加关联表和限速表，保留已有用户、会话和 Scope。Cloud 直接复用 Windows 的鉴权实现，关联以当前控制面数据库为准，Cloud 和 Edge 不通过 Relay 共享微信身份。回滚到只支持 Schema 3 的程序前，按部署手册处理数据库兼容性；本地排障不得读写受保护的生产认证数据库。
+
+### 微信关联与免密登录
+
+小程序由用户主动触发 `wx.login`。KOOK 服务端通过 [微信 code2Session](https://developers.weixin.qq.com/miniprogram/dev/OpenApiDoc/user-login/code2Session.html) 兑换身份，按 AppID 计算摘要后查询现有 KOOK 用户。客户端不能指定用于登录的 KOOK 用户、角色或 OpenID。无关联不创建账号，禁用账号不能登录，首次改密未完成时须用密码登录并完成改密。成功签发原 `kook-wechat-v1` 会话和 CSRF，普通退出只撤销当前会话。
+
+只有服务端从部署环境读取 `WECHAT_MINIAPP_APP_ID`、`WECHAT_MINIAPP_APP_SECRET`；不配齐时兑换接口返回 503，密码登录和绑定状态查询不受影响。向固定微信 HTTPS 端点发起请求，不跟随重定向；不会返回或记录微信请求参数、响应原文、身份摘要或会话密钥。AppSecret 轮换不会改变关联摘要；更换 AppID 后旧关联不能用新小程序的身份匹配。
+
+首次关联由用户使用 KOOK 账号登录后主动触发。绑定和解绑需要当前有效 Session、CSRF，并须已完成临时密码修改，无需再次输入密码。已有不同关联时拒绝覆盖；同一微信不能关联两个 KOOK 用户。解绑仅删除关联，阻止后续微信免密登录；现有 Session 沿用原有失效规则。用户自行改密或管理员重置密码时，同一数据库事务会解除微信关联并撤销旧 Session。改密成功后保留原来的新 Session 签发逻辑；重置后须用临时密码登录并完成改密，才可重新绑定。普通退出不解绑。
+
+登录和绑定在兑换前按 `AUTH_LOGIN_IP_FAILURES` 和 `AUTH_LOGIN_WINDOW_SECONDS` 保留限速配额，达到阈值时不调用微信。微信兑换统计与密码失败统计分开，不因另一种登录成功清空限速。解绑只写本地关联，即使微信服务不可用也可以执行。绑定落库前在写事务内复核用户启用状态、首次改密、会话版本与有效期，防止等待微信期间的改密、重置或会话撤销被旧请求绕过。
 
 SQLite 初始化时启用：
 

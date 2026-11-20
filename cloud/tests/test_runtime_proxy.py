@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import unittest
 
 from flask import Flask
 
@@ -50,26 +51,27 @@ def invoke_channel_active(hub: FakeHub):
         return proxy.invoke("channel.active")
 
 
-def test_connected_channel_active_bypasses_periodic_snapshot():
-    hub = FakeHub(connected=True)
+class RuntimeProxyTests(unittest.TestCase):
+    def test_connected_channel_active_bypasses_periodic_snapshot(self):
+        hub = FakeHub(connected=True)
 
-    response, status = invoke_channel_active(hub)
+        response, status = invoke_channel_active(hub)
 
-    assert status == 200
-    assert response.get_json()["active"] == {"channel-1": "connected"}
-    assert len(hub.calls) == 1
-    assert hub.calls[0][1] == "channel.active"
+        assert status == 200
+        assert response.get_json()["active"] == {"channel-1": "connected"}
+        assert len(hub.calls) == 1
+        assert hub.calls[0][1] == "channel.active"
 
 
-def test_disconnected_channel_active_keeps_cached_offline_fallback():
-    hub = FakeHub(connected=False)
+    def test_disconnected_channel_active_keeps_cached_offline_fallback(self):
+        hub = FakeHub(connected=False)
 
-    response, status = invoke_channel_active(hub)
+        response, status = invoke_channel_active(hub)
 
-    assert status == 200
-    assert response.get_json() == {
-        "success": True,
-        "active": {},
-        "edge_stale": True,
-    }
-    assert hub.calls == []
+        assert status == 200
+        assert response.get_json() == {
+            "success": True,
+            "active": {},
+            "edge_stale": True,
+        }
+        assert hub.calls == []

@@ -38,6 +38,12 @@ AUTH_TRUST_PROXY_HEADERS=true
 
 ## Web 身份安全
 
+原生小程序没有额外免鉴权通道：固定HTTPS origin、动作白名单、原Session/CSRF与后端Role/Scope。工具库仅登记入口元数据，KOOK不得import其他工具的配置、RoomID、日志或存储。原生制品不包含Bot Token、音乐Cookie、认证DB、`.env`、证书或私钥。后台取消请求仅表示客户端不再接受回调，不能保证已送达服务器的播放写操作被撤销。
+
+JSON登录/改密响应中CSRF属于当前会话秘密，只放私有内存，不在截图、Page.data、日志或报告展示；Session Cookie同样不得持久化。网络超时的改密或播放写操作结果可能已生效，客户端不自动重发。旧Web表单继续受原CSRF和限速保护。
+
+原生完整移动端的管理功能继续使用明确接口白名单与服务端角色检查。平台Cookie/验证码/QR参数不进入Page.data或持久缓存，QR图片只用于当次扫码；取消或切后台后不追加QR成功后的Cookie保存。音乐库、搜索和管理视图只映射允许字段，不能将后端对象整体写入页面。临时密码允许在管理员创建/重置成功时本次展示，离开页面/后台即隐藏，不写日志或存储。原生界面仅新增非秘密的主题/密度/动画偏好存储，默认浅色。
+
 当前控制面使用：
 
 - PBKDF2-HMAC-SHA256 密码 Hash；
@@ -217,3 +223,5 @@ git status --short
 - 没有 Token、Cookie、私钥、证书、真实账号密码、内部地址或签名 URL；
 - 新增 API 已明确 Role/Scope/CSRF 边界；
 - Windows/Ubuntu 共享实现未分叉。
+
+发布及对应验收完成后，还须执行 [env 历史清理](release-workflow.md#4-env-历史清理末尾必做)，遵守 `C:\Users\Administrator\Desktop\VibeCoding\env\configs\workflows\post-release-env-cleanup.md`。本机 Codex 先按名称排除真实凭据、认证目录和已知含凭据的日志；上述秘密检查不能用来绕过“不读取、不哈希、不复制、不归档、不修改、不移动、不删除凭据”的全局约束。回执须写明实际删除和保护保留项。

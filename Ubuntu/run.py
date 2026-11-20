@@ -432,6 +432,12 @@ def _qq_api_dir():
     return _system_package_dir(QQ_NODE_PACKAGE)
 
 
+def _api_probe_url(port):
+    # Both pinned Node packages serve a local static index here. Search/login
+    # routes call upstream providers and cannot be used as process liveness.
+    return f"http://127.0.0.1:{port}/"
+
+
 def start_music_api():
     """启动本地网易云音乐API服务"""
     global _music_api_process
@@ -509,7 +515,7 @@ def start_music_api():
             return
         try:
             r = requests.get(
-                f"http://127.0.0.1:{port}/login/status",
+                _api_probe_url(port),
                 timeout=(2, 2),
                 allow_redirects=False,
             )
@@ -624,7 +630,7 @@ def start_qq_music_api():
             return
         try:
             r = requests.get(
-                f"http://127.0.0.1:{port}/getSearchByKey/test",
+                _api_probe_url(port),
                 timeout=(2, 2),
                 allow_redirects=False,
             )
@@ -700,13 +706,13 @@ def _dependency_failures():
             "netease_api",
             _api_dir(),
             _music_api_process,
-            f"http://127.0.0.1:{_env_port('MUSIC_API_PORT', DEFAULT_MUSIC_API_PORT)}/login/status",
+            _api_probe_url(_env_port('MUSIC_API_PORT', DEFAULT_MUSIC_API_PORT)),
         ),
         (
             "qq_music_api",
             _qq_api_dir(),
             _qq_music_api_process,
-            f"http://127.0.0.1:{_env_port('QQ_MUSIC_API_PORT', DEFAULT_QQ_MUSIC_API_PORT)}/getSearchByKey/test",
+            _api_probe_url(_env_port('QQ_MUSIC_API_PORT', DEFAULT_QQ_MUSIC_API_PORT)),
         ),
     )
     for name, service_dir, process, url in services:
@@ -749,9 +755,28 @@ def _repair_dependencies(failures, counters, last_repairs, cooldown):
             )
 
 
+_restart_entrypoint = RUN_SCRIPT
+_restart_arguments = None
+
+
+def _configure_restart_entrypoint(entrypoint):
+    """由启动入口显式注册重启角色，避免 Edge 重启后退回单机模式。"""
+    candidate = os.path.realpath(os.fspath(entrypoint))
+    allowed = {
+        os.path.normcase(RUN_SCRIPT),
+        os.path.normcase(os.path.join(PROJECT_ROOT, "edge", "run.py")),
+    }
+    if os.path.normcase(candidate) not in allowed:
+        raise ValueError("restart entrypoint must be the platform or Edge run.py")
+    global _restart_entrypoint, _restart_arguments
+    _restart_entrypoint = candidate
+    _restart_arguments = tuple(sys.argv[1:])
+
+
 def _build_restart_command():
-    """返回与当前工作目录无关的确定性重启命令。"""
-    return [PYTHON_EXECUTABLE, RUN_SCRIPT, *sys.argv[1:]]
+    """返回与当前工作目录无关、保留启动角色的确定性重启命令。"""
+    arguments = sys.argv[1:] if _restart_arguments is None else _restart_arguments
+    return [PYTHON_EXECUTABLE, _restart_entrypoint, *arguments]
 
 
 def _prepare_restart_environment(now=None):
@@ -914,6 +939,11 @@ def _watchdog_thread():
                 "[看门狗] 健康检查失败（连续 %d/%d）: %s",
                 decision.consecutive_failures,
                 config.failures_before_restart,
+                ", ".join(decision.reasons),
+            )
+        if decision.phase == "degraded" and signature != previous_signature:
+            logger.warning(
+                "[看门狗] 外部组件不可用，仅单独恢复该组件，保持机器人和播放会话: %s",
                 ", ".join(decision.reasons),
             )
         if decision.restart_blocked and signature != previous_signature:

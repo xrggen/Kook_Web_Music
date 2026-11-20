@@ -1,3 +1,4 @@
+from contextlib import closing
 import os
 import sys
 import tempfile
@@ -30,7 +31,7 @@ class ControlPlaneAuthTests(unittest.TestCase):
 
     def _insert_user(self, username="tester", role="user", must_change=1, scopes="*"):
         now = 1_700_000_000
-        with auth._connect() as db:
+        with closing(auth._connect()) as db, db:
             cur = db.execute(
                 """
                 INSERT INTO users(

@@ -13,51 +13,71 @@ https://music.example.com:28443 {
 # 防火墙需放行 TCP 28470-28479；18473/18476 不应直接暴露公网。
 https://music.example.com:28470 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28471 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28472 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28473 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28474 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28475 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28476 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28477 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28478 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }
 https://music.example.com:28479 {
     @edge path /edge/v1/connect
-    handle @edge { reverse_proxy 127.0.0.1:18476 }
+    handle @edge {
+        reverse_proxy 127.0.0.1:18476
+    }
     respond 404
 }

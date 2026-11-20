@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing, nullcontext
 import hashlib
 import hmac
+from http.client import HTTPSConnection, HTTPException
 import json
 import logging
 import os
@@ -11,7 +13,7 @@ import secrets
 import sqlite3
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 
 from flask import (
     abort,
@@ -28,7 +30,7 @@ from flask import (
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "data" / "kook_music.db"
 BOOTSTRAP_ADMIN_USERNAME = os.environ.get("INITIAL_ADMIN_USERNAME", "gen").strip() or "gen"
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 LOGGER = logging.getLogger(__name__)
 
 SCHEMA_MIGRATIONS = {
@@ -68,6 +70,24 @@ SCHEMA_MIGRATIONS = {
     3: (
         "ALTER TABLE channels ADD COLUMN verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1))",
         "CREATE INDEX IF NOT EXISTS idx_channels_verified ON channels(verified, enabled)",
+    ),
+    4: (
+        """
+        CREATE TABLE IF NOT EXISTS wechat_bindings (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            identity_hash TEXT NOT NULL UNIQUE CHECK(length(identity_hash)=64),
+            created_at INTEGER NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS wechat_exchange_attempts (
+            id INTEGER PRIMARY KEY,
+            ip_address TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_wechat_exchange_ip_time ON wechat_exchange_attempts(ip_address, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_wechat_exchange_time ON wechat_exchange_attempts(created_at)",
     ),
 }
 
@@ -136,6 +156,12 @@ USER_API_EXACT = {
     "/api/playlist/promote",
 }
 PUBLIC_PATHS = {"/login", "/healthz", "/favicon.ico"}
+WECHAT_LOGIN_PATH = "/api/auth/wechat/login"
+WECHAT_STATUS_PATH = "/api/auth/wechat/status"
+WECHAT_BIND_PATH = "/api/auth/wechat/bind"
+WECHAT_UNBIND_PATH = "/api/auth/wechat/unbind"
+WECHAT_SELF_PATHS = {WECHAT_STATUS_PATH, WECHAT_BIND_PATH, WECHAT_UNBIND_PATH}
+WECHAT_VALUE_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 PASSWORD_RE = re.compile(r"^(?=.{8,128}$)(?=.*[a-z])(?=.*[A-Z])(?=.*[^A-Za-z0-9]).+$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 
@@ -271,7 +297,7 @@ def _discard_bootstrap_credential_file(username: str) -> None:
 
 
 def init_database() -> None:
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
         db.executescript(
@@ -463,12 +489,12 @@ def _row_dict(row: sqlite3.Row | None) -> dict | None:
 
 
 def get_user_by_id(user_id: int) -> dict | None:
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         return _row_dict(db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
 
 
 def get_user_by_username(username: str) -> dict | None:
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         return _row_dict(
             db.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
         )
@@ -512,7 +538,7 @@ def audit(
 
 def _record_login_attempt(username: str, success: bool) -> None:
     now = int(time.time())
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute(
             "INSERT INTO login_attempts(username,ip_address,success,created_at) VALUES(?,?,?,?)",
             (username[:64], client_ip(), 1 if success else 0, now),
@@ -527,7 +553,7 @@ def _record_login_attempt(username: str, success: bool) -> None:
 
 def _login_rate_limited(username: str) -> bool:
     cutoff = int(time.time()) - LOGIN_WINDOW_SECONDS
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         by_user = db.execute(
             """
             SELECT COUNT(*) FROM login_attempts
@@ -545,12 +571,12 @@ def _login_rate_limited(username: str) -> bool:
     return by_user >= LOGIN_USER_LIMIT or by_ip >= LOGIN_IP_LIMIT
 
 
-def create_session(user: dict) -> tuple[str, str]:
+def create_session(user: dict, *, db: sqlite3.Connection | None = None) -> tuple[str, str]:
     now = int(time.time())
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(32)
-    with _connect() as db:
-        db.execute(
+    with (nullcontext(db) if db is not None else closing(_connect())) as conn:
+        conn.execute(
             """
             INSERT INTO sessions(
                 user_id,token_hash,csrf_hash,auth_version,created_at,last_seen_at,
@@ -570,6 +596,8 @@ def create_session(user: dict) -> tuple[str, str]:
                 request.headers.get("User-Agent", "")[:512],
             ),
         )
+        if db is None:
+            conn.commit()
     return token, csrf
 
 
@@ -578,7 +606,7 @@ def _load_session(token: str | None) -> tuple[dict | None, dict | None]:
         return None, None
     now = int(time.time())
     token_hash = _token_hash(token)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         row = db.execute(
             """
             SELECT
@@ -762,7 +790,7 @@ def sync_channel(
     channel_type: str = "voice",
 ) -> int:
     """保存 KOOK API 已确认的频道归属，并原子修正已有频道范围。"""
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
         guild_db_id = ensure_guild(kook_guild_id, db=db)
         now = int(time.time())
@@ -809,7 +837,7 @@ def scope_allows(user: dict, guild_id: str | None = None, channel_id: str | None
         return True
     if not has_permission(user, "playback.control") and not has_permission(user, "playback.read"):
         return False
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         guild_db_id = None
         if guild_id:
             guild_row = db.execute(
@@ -878,7 +906,7 @@ def scope_allows(user: dict, guild_id: str | None = None, channel_id: str | None
 def visible_guild_ids(user: dict) -> set[str] | None:
     if user.get("role") == "admin":
         return None
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         if db.execute(
             """
             SELECT 1 FROM user_scopes
@@ -909,7 +937,7 @@ def visible_guild_ids(user: dict) -> set[str] | None:
 def visible_channel_ids(user: dict, guild_id: str) -> set[str] | None:
     if user.get("role") == "admin":
         return None
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         if db.execute(
             """
             SELECT 1 FROM user_scopes
@@ -989,6 +1017,8 @@ def _api_error(message: str, status: int):
 
 def _authorize_request(user: dict):
     path = request.path
+    if path in WECHAT_SELF_PATHS:
+        return None
     if path.startswith("/api/"):
         try:
             _request_resource_ids()
@@ -996,7 +1026,7 @@ def _authorize_request(user: dict):
             return _api_error(str(exc), 400)
     if user["role"] == "admin":
         return None
-    if path in USER_PAGE_ALLOW:
+    if path in USER_PAGE_ALLOW or path == "/logout":
         return None
     if path.startswith(ADMIN_PAGE_PREFIXES):
         abort(403)
@@ -1047,16 +1077,209 @@ def _session_endpoint():
     )
 
 
+class _WechatExchangeError(Exception):
+    def __init__(self, code: str, message: str, status: int):
+        super().__init__(code)
+        self.code, self.message, self.status = code, message, status
+
+
+def _wechat_error(code: str, message: str, status: int):
+    body = dict(success=False, code=code, error=message, auth_required=status == 401)
+    if code == "PASSWORD_CHANGE_REQUIRED":
+        body["must_change_password"] = True
+    return jsonify(body), status
+
+
+def _wechat_config() -> tuple[str, str]:
+    app_id = os.environ.get("WECHAT_MINIAPP_APP_ID", "").strip()
+    app_secret = os.environ.get("WECHAT_MINIAPP_APP_SECRET", "").strip()
+    if not app_id or not app_secret:
+        raise _WechatExchangeError("WECHAT_UNAVAILABLE", "微信登录暂不可用", 503)
+    return app_id, app_secret
+
+
+def _wechat_code(payload) -> str:
+    code = payload.get("code") if isinstance(payload, dict) else None
+    if not isinstance(code, str) or not WECHAT_VALUE_RE.fullmatch(code):
+        raise _WechatExchangeError("INVALID_REQUEST", "微信登录参数无效", 400)
+    return code
+
+
+def _reserve_wechat_exchange() -> None:
+    """Reserve an IP slot before contacting WeChat, including concurrent attempts."""
+    now, ip = int(time.time()), client_ip()
+    cutoff = now - LOGIN_WINDOW_SECONDS
+    with closing(_connect()) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("DELETE FROM wechat_exchange_attempts WHERE created_at<?", (cutoff,))
+        count = db.execute(
+            "SELECT COUNT(*) FROM wechat_exchange_attempts WHERE ip_address=? AND created_at>=?",
+            (ip, cutoff),
+        ).fetchone()[0]
+        if count >= LOGIN_IP_LIMIT:
+            raise _WechatExchangeError("WECHAT_RATE_LIMITED", "微信操作过于频繁，请稍后再试", 429)
+        db.execute("INSERT INTO wechat_exchange_attempts(ip_address,created_at) VALUES(?,?)", (ip, now))
+
+
+def _exchange_wechat_identity(code: str, app_id: str, app_secret: str) -> str:
+    """Return an app-scoped digest, never the provider's raw identity or session key."""
+    query = urlencode({"appid": app_id, "secret": app_secret, "js_code": code,
+                       "grant_type": "authorization_code"})
+    unavailable = _WechatExchangeError("WECHAT_UPSTREAM_ERROR", "微信服务暂不可用", 502)
+    try:
+        # Fixed TLS host; no ambient proxy, redirect, retry or HTTP library URL logging.
+        with closing(HTTPSConnection("api.weixin.qq.com", timeout=5)) as conn:
+            conn.set_debuglevel(0)
+            conn.request("GET", "/sns/jscode2session?" + query, headers={"Accept": "application/json"})
+            with closing(conn.getresponse()) as response:
+                if response.status == 429:
+                    raise _WechatExchangeError("WECHAT_RATE_LIMITED", "微信操作过于频繁，请稍后再试", 429)
+                if response.status != 200:
+                    raise unavailable
+                raw = response.read(8193)
+        payload = json.loads(raw) if len(raw) <= 8192 else None
+    except (OSError, HTTPException, ValueError, RecursionError):
+        raise unavailable from None
+    if not isinstance(payload, dict):
+        raise unavailable
+    errcode = payload.get("errcode", 0)
+    if type(errcode) is not int:
+        raise unavailable
+    if errcode in {40029, 40163, 40226}:
+        raise _WechatExchangeError("WECHAT_CODE_INVALID", "微信登录凭证无效或已过期，请重新操作", 400)
+    if errcode == 45011:
+        raise _WechatExchangeError("WECHAT_RATE_LIMITED", "微信操作过于频繁，请稍后再试", 429)
+    openid = payload.get("openid")
+    if errcode != 0 or not isinstance(openid, str) or not WECHAT_VALUE_RE.fullmatch(openid):
+        raise unavailable
+    return hashlib.sha256(f"wechat-miniapp\0{app_id}\0{openid}".encode("utf-8")).hexdigest()
+
+
+def _wechat_identity(payload) -> str:
+    code = _wechat_code(payload)
+    app_id, app_secret = _wechat_config()
+    _reserve_wechat_exchange()
+    return _exchange_wechat_identity(code, app_id, app_secret)
+
+
+def _native_session_response(user: dict, token: str, csrf: str):
+    response = jsonify(success=True, clientProtocol="kook-wechat-v1", csrfToken=csrf, user={
+        "id": user["id"], "username": user["username"], "role": user["role"],
+        "must_change_password": bool(user["must_change_password"]),
+    })
+    _set_session_cookies(response, token, csrf)
+    return response
+
+
+def _wechat_login():
+    try:
+        identity = _wechat_identity(request.get_json(silent=True))
+    except _WechatExchangeError as exc:
+        return _wechat_error(exc.code, exc.message, exc.status)
+    with closing(_connect()) as db, db:
+        # Lookup and session creation are serialized with unbind/disable/reset writes.
+        db.execute("BEGIN IMMEDIATE")
+        user = db.execute(
+            "SELECT u.* FROM wechat_bindings w JOIN users u ON u.id=w.user_id WHERE w.identity_hash=?",
+            (identity,),
+        ).fetchone()
+        if not user or not user["enabled"]:
+            return _wechat_error("WECHAT_NOT_LINKED", "当前微信没有可登录的 KOOK 账号", 401)
+        if user["must_change_password"]:
+            return _wechat_error("PASSWORD_CHANGE_REQUIRED", "请先使用账号密码登录并完成改密", 428)
+        now = int(time.time())
+        db.execute("UPDATE users SET last_login_at=?, updated_at=? WHERE id=?", (now, now, user["id"]))
+        token, csrf = create_session(user, db=db)
+        audit("auth.wechat_login", "auth", user_id=user["id"], db=db)
+    return _native_session_response(user, token, csrf)
+
+
+def _wechat_status():
+    with closing(_connect()) as db:
+        bound = db.execute("SELECT 1 FROM wechat_bindings WHERE user_id=?", (current_user()["id"],)).fetchone()
+    return jsonify(success=True, bound=bool(bound))
+
+
+def _wechat_mutation_user(db: sqlite3.Connection) -> int:
+    """Revalidate the session under the write lock after any upstream request."""
+    now = int(time.time())
+    row = db.execute(
+        """
+        SELECT u.id, u.must_change_password
+        FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE s.id=? AND u.id=? AND u.enabled=1 AND s.revoked_at IS NULL
+          AND s.auth_version=u.auth_version AND s.idle_expires_at>? AND s.absolute_expires_at>?
+        """,
+        (g.auth_session["id"], current_user()["id"], now, now),
+    ).fetchone()
+    if row is None:
+        raise _WechatExchangeError("AUTH_REQUIRED", "请先登录", 401)
+    if row["must_change_password"]:
+        raise _WechatExchangeError("PASSWORD_CHANGE_REQUIRED", "请先完成首次改密", 428)
+    return row["id"]
+
+
+def _remove_wechat_binding(db: sqlite3.Connection, user_id: int, *, actor_id: int, reason: str) -> None:
+    if db.execute("DELETE FROM wechat_bindings WHERE user_id=?", (user_id,)).rowcount:
+        audit("auth.wechat_unbound", "auth", user_id=actor_id, resource_type="user",
+              resource_id=str(user_id), metadata={"reason": reason}, db=db)
+
+
+def _wechat_bind():
+    try:
+        identity = _wechat_identity(request.get_json(silent=True))
+        with closing(_connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            user_id = _wechat_mutation_user(db)
+            own = db.execute("SELECT identity_hash FROM wechat_bindings WHERE user_id=?", (user_id,)).fetchone()
+            if own:
+                if own["identity_hash"] == identity:
+                    return jsonify(success=True, bound=True)
+                return _wechat_error("WECHAT_BINDING_CONFLICT", "当前账号已绑定微信，请先解绑", 409)
+            if db.execute("SELECT 1 FROM wechat_bindings WHERE identity_hash=?", (identity,)).fetchone():
+                return _wechat_error("WECHAT_BINDING_CONFLICT", "当前微信已绑定其他 KOOK 账号", 409)
+            db.execute("INSERT INTO wechat_bindings(user_id,identity_hash,created_at) VALUES(?,?,?)",
+                       (user_id, identity, int(time.time())))
+            audit("auth.wechat_bound", "auth", user_id=user_id, db=db)
+    except _WechatExchangeError as exc:
+        return _wechat_error(exc.code, exc.message, exc.status)
+    return jsonify(success=True, bound=True)
+
+
+def _wechat_unbind():
+    if not isinstance(request.get_json(silent=True), dict):
+        return _wechat_error("INVALID_REQUEST", "解绑参数无效", 400)
+    try:
+        with closing(_connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            user_id = _wechat_mutation_user(db)
+            _remove_wechat_binding(db, user_id, actor_id=user_id, reason="self_unbind")
+    except _WechatExchangeError as exc:
+        return _wechat_error(exc.code, exc.message, exc.status)
+    return jsonify(success=True, bound=False)
+
+
 def _login():
     if request.method == "GET":
         if current_user():
             return redirect("/change-password" if current_user()["must_change_password"] else "/dashboard")
         return render_template("login.html", error=None)
 
-    username = (request.form.get("username") or "").strip()
-    password = request.form.get("password") or ""
+    native = request.is_json
+    if native:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("username"), str) or not isinstance(payload.get("password"), str):
+            return _api_error("登录参数无效", 400)
+        username, password = payload["username"].strip(), payload["password"]
+        if not username or len(username) > 128 or not password or len(password) > 512:
+            return _api_error("登录参数无效", 400)
+    else:
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
     if _login_rate_limited(username):
         audit("auth.login_rate_limited", "auth", metadata={"username": username})
+        if native:
+            return _api_error("登录失败次数过多，请稍后再试", 429)
         return render_template("login.html", error="登录失败次数过多，请稍后再试"), 429
 
     user = get_user_by_username(username)
@@ -1064,17 +1287,25 @@ def _login():
         _record_login_attempt(username, False)
         audit("auth.login_failed", "auth", user_id=user["id"] if user else None, metadata={"username": username})
         time.sleep(0.15)
+        if native:
+            return _api_error("用户名或密码错误", 401)
         return render_template("login.html", error="用户名或密码错误"), 401
 
     _record_login_attempt(username, True)
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute("UPDATE users SET last_login_at=?, updated_at=? WHERE id=?", (int(time.time()), int(time.time()), user["id"]))
     fresh = get_user_by_id(user["id"])
     token, csrf = create_session(fresh)
     audit("auth.login", "auth", user_id=user["id"])
     target = "/change-password" if fresh["must_change_password"] else _safe_next(request.args.get("next"))
-    response = make_response(redirect(target))
+    if native:
+        response = jsonify({"success": True, "clientProtocol": "kook-wechat-v1", "csrfToken": csrf,
+                            "user": {"id": fresh["id"], "username": fresh["username"], "role": fresh["role"],
+                                     "must_change_password": bool(fresh["must_change_password"])}})
+    else:
+        response = make_response(redirect(target))
     _set_session_cookies(response, token, csrf)
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -1082,15 +1313,16 @@ def _logout():
     user = current_user()
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        with _connect() as db:
+        with closing(_connect()) as db, db:
             db.execute(
                 "UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
                 (int(time.time()), _token_hash(token)),
             )
     if user:
         audit("auth.logout", "auth", user_id=user["id"])
-    response = make_response(redirect("/login"))
+    response = jsonify({"success": True}) if request.is_json else make_response(redirect("/login"))
     _clear_session_cookies(response)
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -1100,9 +1332,16 @@ def _change_password():
         return redirect("/login")
     error = None
     if request.method == "POST":
-        current = request.form.get("current_password") or ""
-        new_password = request.form.get("new_password") or ""
-        confirm = request.form.get("confirm_password") or ""
+        native = request.is_json
+        payload = request.get_json(silent=True) if native else request.form
+        if not isinstance(payload, dict) and native:
+            return _api_error("修改密码参数无效", 400)
+        current = payload.get("current_password") or ""
+        new_password = payload.get("new_password") or ""
+        confirm = payload.get("confirm_password") or ""
+        if native and (any(not isinstance(value, str) for value in (current, new_password, confirm)) or
+                       any(len(value) > 512 for value in (current, new_password, confirm))):
+            return _api_error("修改密码参数无效", 400)
         row = get_user_by_id(user["id"])
         if not verify_password(current, row["password_hash"]):
             error = "当前密码不正确"
@@ -1112,7 +1351,7 @@ def _change_password():
             error = validate_password(new_password)
         if not error:
             now = int(time.time())
-            with _connect() as db:
+            with closing(_connect()) as db, db:
                 db.execute(
                     """
                     UPDATE users
@@ -1123,14 +1362,20 @@ def _change_password():
                     (hash_password(new_password), now, user["id"]),
                 )
                 db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, user["id"]))
+                _remove_wechat_binding(db, user["id"], actor_id=user["id"], reason="password_changed")
             if row["must_change_password"]:
                 _discard_bootstrap_credential_file(row["username"])
             fresh = get_user_by_id(user["id"])
             token, csrf = create_session(fresh)
             audit("auth.password_changed", "auth", user_id=user["id"])
-            response = make_response(redirect("/dashboard"))
+            response = (jsonify({"success": True, "clientProtocol": "kook-wechat-v1", "csrfToken": csrf,
+                                "user": {"id": fresh["id"], "username": fresh["username"], "role": fresh["role"],
+                                         "must_change_password": False}}) if native else make_response(redirect("/dashboard")))
             _set_session_cookies(response, token, csrf)
+            response.headers["Cache-Control"] = "no-store"
             return response
+        if native:
+            return _api_error(error or "修改密码失败", 400)
     return render_template("change_password.html", error=error)
 
 
@@ -1212,7 +1457,7 @@ def _admin_users_page():
 def _admin_users_api(user_id: int | None = None):
     actor = current_user()
     if request.method == "GET":
-        with _connect() as db:
+        with closing(_connect()) as db, db:
             rows = db.execute(
                 """
                 SELECT id,username,role,enabled,must_change_password,created_at,last_login_at
@@ -1240,7 +1485,7 @@ def _admin_users_api(user_id: int | None = None):
         temp_password = secrets.token_urlsafe(18) + "!Aa1"
         now = int(time.time())
         try:
-            with _connect() as db:
+            with closing(_connect()) as db, db:
                 cur = db.execute(
                     """
                     INSERT INTO users(
@@ -1268,7 +1513,7 @@ def _admin_users_api(user_id: int | None = None):
 
     if request.method == "PATCH":
         scopes_value = data.get("scopes")
-        with _connect() as db:
+        with closing(_connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             locked_row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
             if not locked_row:
@@ -1317,7 +1562,7 @@ def _admin_users_api(user_id: int | None = None):
     if request.method == "DELETE":
         if actor["id"] == user_id:
             return _api_error("不能删除当前登录管理员", 400)
-        with _connect() as db:
+        with closing(_connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             locked_row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
             if not locked_row:
@@ -1340,7 +1585,7 @@ def _reset_user_password(user_id: int):
         return _api_error("用户不存在", 404)
     temp_password = secrets.token_urlsafe(18) + "!Aa1"
     now = int(time.time())
-    with _connect() as db:
+    with closing(_connect()) as db, db:
         db.execute(
             """
             UPDATE users
@@ -1351,12 +1596,15 @@ def _reset_user_password(user_id: int):
             (hash_password(temp_password), now, user_id),
         )
         db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, user_id))
+        _remove_wechat_binding(db, user_id, actor_id=actor["id"], reason="password_reset")
     audit("iam.password_reset", "iam", user_id=actor["id"], resource_type="user", resource_id=str(user_id))
     return jsonify({"success": True, "temporary_password": temp_password})
 
 
 def _request_guard():
     path = request.path
+    if path == WECHAT_LOGIN_PATH and request.method == "POST":
+        return None
     if path.startswith("/static/") or path in PUBLIC_PATHS:
         if path == "/login":
             token = request.cookies.get(SESSION_COOKIE)
@@ -1367,17 +1615,23 @@ def _request_guard():
     user, session = _load_session(request.cookies.get(SESSION_COOKIE))
     g.current_user, g.auth_session = user, session
     if not user:
+        if path in WECHAT_SELF_PATHS:
+            return _wechat_error("AUTH_REQUIRED", "请先登录", 401)
         if path.startswith("/api/"):
             return _api_error("请先登录", 401)
         return redirect(url_for("auth_login", next=_safe_next(request.full_path.rstrip("?"))))
 
     if user["must_change_password"] and path not in {"/change-password", "/logout", "/api/auth/session"}:
+        if path in WECHAT_SELF_PATHS:
+            return _wechat_error("PASSWORD_CHANGE_REQUIRED", "请先完成首次改密", 428)
         if path.startswith("/api/"):
             return jsonify({"success": False, "error": "首次登录必须先修改密码", "must_change_password": True}), 428
         return redirect("/change-password")
 
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and path != "/login":
         if not session or not _csrf_valid(session):
+            if path in WECHAT_SELF_PATHS:
+                return _wechat_error("CSRF_FAILED", "CSRF 校验失败", 403)
             return _api_error("CSRF 校验失败", 403)
 
     return _authorize_request(user)
@@ -1414,7 +1668,9 @@ def _after_request(response):
                     response.set_data(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
                     response.mimetype = "application/json"
 
-    if user and request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.path.startswith("/api/") and response.status_code < 400:
+    if (user and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and request.path.startswith("/api/") and request.path not in WECHAT_SELF_PATHS
+            and response.status_code < 400):
         guild_id, channel_id = _request_resource_ids()
         audit(
             f"http.{request.method.lower()}",
@@ -1459,6 +1715,10 @@ def register_auth(app) -> None:
     app.add_url_rule("/change-password", "auth_change_password", _change_password, methods=["GET", "POST"])
     app.add_url_rule("/users", "auth_users", _admin_users_page, methods=["GET"])
     app.add_url_rule("/api/auth/session", "auth_session", _session_endpoint, methods=["GET"])
+    app.add_url_rule(WECHAT_LOGIN_PATH, "auth_wechat_login", _wechat_login, methods=["POST"])
+    app.add_url_rule(WECHAT_STATUS_PATH, "auth_wechat_status", _wechat_status, methods=["GET"])
+    app.add_url_rule(WECHAT_BIND_PATH, "auth_wechat_bind", _wechat_bind, methods=["POST"])
+    app.add_url_rule(WECHAT_UNBIND_PATH, "auth_wechat_unbind", _wechat_unbind, methods=["POST"])
     app.add_url_rule("/api/admin/users", "auth_admin_users", _admin_users_api, methods=["GET", "POST"], defaults={"user_id": None})
     app.add_url_rule("/api/admin/users/<int:user_id>", "auth_admin_user", _admin_users_api, methods=["PATCH", "DELETE"])
     app.add_url_rule("/api/admin/users/<int:user_id>/reset-password", "auth_admin_user_reset", _reset_user_password, methods=["POST"])

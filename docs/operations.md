@@ -18,6 +18,16 @@ Node.js 必须为 20+，全局模块目录必须位于项目外。启动日志�
 - `.env` 中 `SECRET_KEY` 与 `AUTH_*` 配置正确；
 - 公网 HTTPS 部署已设置 `AUTH_COOKIE_SECURE=true`。
 
+### Cloud 显示 Edge 离线，但本地页面和 Bot 正常
+
+先确认启动入口。`windows/run.py` 和 `Ubuntu/run.py` 启动单机模式，只有 `edge/run.py` 会启动出站 WSS Supervisor。
+
+Windows 在仓库根目录运行 `start-edge.cmd` 或 `python edge/run.py`；Ubuntu 运行 `python3 edge/run.py`。切换入口前先停止旧进程，完整重启会清空内存播放队列。已有音乐 API 依赖、本地数据库和远端节点配置可以直接复用。
+
+日志应同时出现 `Edge remote supervisor started` 和 `Edge relay connected`。Cloud 的 `/healthz` 应返回 `edge_connected: true`。Edge 的看门狗完整重启会保留 `edge/run.py` 入口和原启动参数。
+
+若入口正确但仍离线，登录本地设置页检查远端节点状态、端口池和错误码。WSS 端口在未携带 Agent Token 时返回 `401`，说明 TLS 和 Relay 可达；这项检查不能证明 Agent 已成功认证。不要为恢复连接关闭 TLS 校验或删除配置数据库。
+
 ## 日志、审计与状态
 
 平台目录中的主要运行日志：
@@ -47,6 +57,20 @@ SQLite `audit_logs` 记录：
 这些入口均要求 Admin Session；写操作还要求 CSRF。
 
 排障按时间线关联主日志、Node API 日志、SQLite 审计和 FFmpeg 错误。对外分享前删除 Token、Cookie、用户名/IP、用户/频道 ID、临时密码和完整签名 URL。
+
+## Cloud 在线但 KOOK 指令没有响应
+
+Cloud 的 `edge_connected=true` 仅说明 Cloud/Edge 的出站 WSS 正常。KOOK Bot 使用另一条 WebSocket；须分别检查 KOOK 握手、心跳和消息入口。
+
+固定版本 SDK 的网关接收器通过 `bot_gateway.py` 补充处理：收到服务端 `s=5` 后清除旧序号/待处理网关事件并重新获取网关；HELLO 非成功、6 秒内未收到 HELLO/PONG 时关闭旧连接重连；断开时取消旧心跳任务。只有成功握手后的有效事件/PONG 才刷新在线状态。该恢复不重建播放器、音乐 API 或 Cloud/Edge 服务。
+
+管理员 `GET /api/debug` 中的 `kook_gateway` 包含事件数、消息入口数、白名单拒绝数及最近活动时间，不返回消息内容、账号 ID、Session 或网关 URL。排障时可在启动进程环境中设置 `KOOK_BOT_DIAGNOSTICS_PATH` 为共享 env 内的非敏感 JSON 路径；每次 Bot 心跳和文字消息入口会写入同类快照及白名单维度数量，不读取或复制凭据文件。
+
+- KOOK 已成功握手但测试期间 `events_received`、`messages_received` 都不增加：继续检查开发者后台的消息过滤/订阅、机器人所在服务器与频道的可见权限，以及是否有别处启动的相同机器人连接。
+- `messages_received` 与 `messages_denied` 一起增加：现有 Bot 白名单拒绝了消息。按授权范围由管理员配置，不通过放开所有用户来排障。
+- 有消息且未被拒绝，但无回复：核对 `/ping` 的指令入口/处理输出、消息格式及 KOOK 发送消息权限/配额。
+
+诊断快照是排障材料，按项目发布收尾流程保留当前必要证据；不要读取可能包含凭据的既有原始日志。
 
 ## Web 鉴权问题
 
@@ -110,11 +134,13 @@ kook_music.db-shm
 
 watchdog 不以 Flask 端口单一判定健康，而分别观察 Bot 生命周期、事件循环 heartbeat、KOOK gateway 活动、Web 和两个本地 API。
 
+两个 Node API 的启动检查和存活检查使用本地静态首页 `/`，不调用依赖上游平台的搜索、登录接口。搜索耗时或平台限流不代表本地 API 进程已失效。
+
 恢复顺序：
 
 1. 等待启动宽限期。
 2. 连续失败达到阈值后修复单个 Node API。
-3. 组件修复无效或 Bot/Web 持续异常时请求完整重启。
+3. 仅 Node API 故障时保持降级状态并按冷却时间继续单独修复，不中断机器人或正在播放的会话；Bot/Web 持续异常时才请求完整重启。
 4. 完整重启受时间窗、次数预算和退避限制。
 5. 重启前停止播放会话并回收本应用持有的子进程。
 
@@ -232,3 +258,9 @@ data/
 - 管理员密码或临时密码；
 - Session/CSRF；
 - 完整媒体 URL。
+
+## 打包/发布后的 env 历史清理
+
+打包验证或授权发布及验收完成后，执行 [项目收尾流程](release-workflow.md#4-env-历史清理末尾必做) 的末尾必做阶段，并读取 `C:\Users\Administrator\Desktop\VibeCoding\env\configs\workflows\post-release-env-cleanup.md`。仅处理本项目、自己会话的过时项；保留运行目录、当前交付、共享依赖和必要回滚集。凭据及认证目录不读取、不哈希、不备份、不清理。
+
+handoff 与回执记录删除路径、文件数、逻辑大小、保留项及理由；没有符合条件的项时记录“已检查，无可清理历史项”。

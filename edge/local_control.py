@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import importlib
 import secrets
 import sys
@@ -38,7 +40,7 @@ class LocalControlClient:
         now = int(time.time())
         token = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(32)
-        with self.auth._connect() as db:
+        with closing(self.auth._connect()) as db, db:
             row = db.execute(
                 "SELECT * FROM users WHERE username=? COLLATE NOCASE",
                 (self.SERVICE_USER,),

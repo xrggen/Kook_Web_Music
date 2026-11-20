@@ -159,7 +159,7 @@ HTTP Response
 运行状态区分 Flask 可达、Bot 生命周期、Bot loop heartbeat、KOOK gateway 活动和本地 API 可用性。watchdog 采用分级恢复：
 
 1. 启动宽限期内不做激进处理。
-2. 连续失败后先重启单个 Node API。
+2. 通过本地静态首页检测 Node API 存活，连续失败后单独重启对应 API；API 单独故障不升级为整个机器人重启。
 3. Bot/Web 持续异常时才请求完整进程重启。
 4. 完整重启受时间窗、次数预算和退避限制。
 5. 重启前先停止播放会话并回收本应用创建的子进程。
@@ -183,3 +183,18 @@ watchdog 不负责重置 Web 用户或 SQLite。
 任何长期业务分叉都应先收敛为共享实现或明确的平台适配点。
 
 深度审计后形成的授权、进程、外部网络、凭据、前端和资源上限基线见 [security-hardening.md](security-hardening.md)。架构调整不得绕过其中定义的统一应用工厂、系统 Node、无通用 shell 和双平台同步约束。
+
+## Cloud / Edge 协议
+
+[首页时序图](../README.md#cloud--edge-协议)展示了握手、状态同步和控制请求。Cloud 与 Edge 使用 [Relay v1](../shared/relay_protocol.py)，公网 WSS 路径为 `/edge/v1/connect`。Edge 在建立连接时提交 Agent Bearer 认证与 Agent ID，再发送 `hello`。Cloud 回 `hello_ack` 并接受状态事件。
+
+| 消息 | 方向 | 用途 |
+| --- | --- | --- |
+| `heartbeat` / `heartbeat_ack` | Edge → Cloud → Edge | 监测连接状态 |
+| `event` | Edge → Cloud | `state.full` 同步拓扑和状态，`state.runtime` 更新播放，`state.account` 更新账号摘要 |
+| `command` | Cloud → Edge | 按 `id`、`action`、`deadline` 与 `payload` 调用现有本地 HTTP 动作 |
+| `result` | Edge → Cloud | 带相同 `id` 的结果或错误，供 Cloud 回应请求方 |
+
+Edge 保持一条活动连接，优先尝试上次成功端口。网络超时或拒绝时轮换候选端口，全池失败后退避。认证、证书和协议错误需修正配置。动态设置以 Edge 持久化配置为准，修改后重连 Agent。
+
+Cloud 经过 HTTP 鉴权和 Scope 校验后才路由请求。常用读操作可以使用有时效的 Edge 状态缓存。搜索和写动作走实时 RPC，Edge 离线时返回错误。协议拒绝任意 URL、文件操作及通用命令执行。公网端口和 TLS 见 [部署指南](cloud-edge-deployment.md)。

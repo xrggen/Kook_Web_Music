@@ -1,129 +1,121 @@
-# KOOK 音乐机器人 Web 控制台
+# KOOK Web Music
 
-基于 [VexMare/Kook_Web_Music](https://github.com/VexMare/Kook_Web_Music) 持续维护的自托管 KOOK 音乐机器人，提供响应式 Web 控制台，并接入网易云音乐、QQ 音乐和 Bilibili。
+KOOK Web Music 是可自托管的音乐机器人和控制台。它能在 KOOK 语音频道播放网易云音乐、QQ 音乐和 Bilibili 音频。你可以从浏览器搜索、导入歌单和管理队列，也可以在 KOOK 频道使用机器人指令。仓库还提供可集成到微信小程序的原生控制页。
 
-## 主要能力
+## 怎么跑起来
 
-- 通过 KOOK 命令或 Web 控制台搜索、入队和控制播放。
-- 按语音频道隔离播放会话，同一服务器可并行管理多个频道。
-- 支持歌单延迟解析、预取、单曲循环、列表循环和随机播放。
-- 提供三平台账号登录、歌单读取与服务端凭据持久化。
-- 提供运行状态、日志和分级 watchdog 恢复。
-- 桌面端与移动端共用页面、状态和 API。
+| 需求 | 启动入口 | 接下来读 |
+| --- | --- | --- |
+| 在 Windows 上运行机器人和本地控制台 | `python windows/run.py` | [Windows 快速启动](windows/README.md) |
+| 在 Ubuntu 上运行机器人和本地控制台 | `python3 Ubuntu/run.py` | [Ubuntu 快速启动](Ubuntu/README.md) |
+| 公网控制，家里或局域网的机器负责播放 | 云服务器运行 `cloud/run.py`，播放机运行 `edge/run.py` | [Cloud / Edge 部署](docs/cloud-edge-deployment.md) |
+| 从微信小程序控制机器人 | 把 `wechat-miniapp/` 装配到宿主小程序，连接 Cloud HTTPS | [小程序集成](wechat-miniapp/README.md) |
 
-## 运行架构
+### 第一次启动
 
-```text
-浏览器 / KOOK 命令
-        │
-        ▼
-Python 应用（Flask + KOOK Bot）
-        │
-        ├─ 网易云：系统 Node → 全局 NeteaseCloudMusicApi → 18474
-        ├─ QQ 音乐：系统 Node → 全局 qq-music-api → 18475
-        └─ Bilibili：Python 直连公网 API
-        │
-        ▼
-每个 channel_id 一个播放会话
-        │
-        ▼
-FFmpeg 解码 / Opus 编码 → RTP → KOOK 语音频道
+下载仓库，或在 Git 终端运行 `git clone https://github.com/xrggen/Kook_Web_Music.git` 并进入 `Kook_Web_Music`。
+
+1. 在 KOOK 创建机器人并邀请到目标服务器，给它进入目标语音频道和播放所需的权限。
+2. 按平台指南准备 Python 3.10+、系统 Node.js 20+、npm 和 FFmpeg。网易云和 QQ 各用一个全局安装的 Node API，Bilibili 由 Python 适配器访问。
+3. 从对应平台的 `.env.example` 建立本地 `.env`，填入 `BOT_TOKEN` 及机器人指令允许的服务器、频道或用户 ID。按表格选择入口启动。
+4. 在播放机访问 [本地控制台](http://127.0.0.1:18473/)。用首次启动生成的管理员凭据登录并改密。选择服务器和语音频道，搜索一首歌加入队列。
+5. 远程模式还需在 Cloud 的 `/healthz` 确认 `edge_connected: true`。**同一播放机只启动一个运行入口。** Edge 也提供本地控制台和 Bot。
+
+安装、初始化、长期运行及升级见 [部署说明](docs/deployment.md)。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    Local["本地浏览器"] --> EdgeWeb
+    Kook["KOOK 文字频道"] --> Runtime
+    Remote["公网浏览器 / 微信小程序"] -->|HTTPS 28443| CloudWeb
+    subgraph Cloud["Cloud 控制面（可选）"]
+        CloudWeb["Web / Session / Scope"]
+        Relay["WSS Relay 与状态缓存"]
+        CloudWeb --> Relay
+    end
+    subgraph Edge["播放主机（Windows 或 Ubuntu）"]
+        Agent["Edge Agent（远程模式）"]
+        EdgeWeb["本地 Web :18473"]
+        Runtime["Bot 与频道队列"]
+        Adapters["网易云 / QQ / Bilibili 适配器"]
+        Audio["FFmpeg 音频处理"]
+        Agent --> EdgeWeb
+        EdgeWeb --> Runtime
+        Runtime --> Adapters
+        Runtime --> Audio
+    end
+    Agent <-->|Edge 发起 WSS :28470-28479| Relay
+    Adapters --> Music["音乐平台"]
+    Audio -->|RTP| Voice["KOOK 语音频道"]
 ```
 
-仓库不包含 Node 运行时、Node API 源码或 `node_modules`。项目内所有 Node API 都由 `run.py` 使用主机 PATH 中的同一个系统 Node.js 启动，并从 `npm root --global` 解析依赖。
+播放机维护每个语音频道的队列、播放进度和平台登录态。Cloud 管理远程登录与资源授权，把控制请求转给 Edge。Cloud 断线时，Edge 的本地控制台、机器人指令和当前播放可继续运行。协议和运行组件详见 [架构说明](docs/architecture.md)。
 
-完整机制见 [运行时架构](docs/architecture.md)。
+## Cloud / Edge 协议
 
-## 环境要求
-
-- Python 3.10+，建议使用当前受支持的 Python 3 版本。
-- 系统 Node.js 20+ 与 npm。
-- FFmpeg 和 ffprobe。
-- KOOK Bot Token。
-- 可访问 KOOK 与三方音乐平台的网络。
-
-全局安装固定的 Node API：
-
-```bash
-npm install --global NeteaseCloudMusicApi@4.25.0 @sansenjian/qq-music-api@2.3.1
+```mermaid
+sequenceDiagram
+    participant E as Edge Agent
+    participant R as Cloud Relay
+    participant W as Cloud Web
+    participant U as 浏览器或小程序
+    E->>R: 发起 WSS，提交 Agent 认证
+    E->>R: hello（Agent 与协议版本）
+    R-->>E: hello_ack
+    E->>R: event / state.full（初始快照）
+    loop 在线期间
+        E->>R: heartbeat
+        R-->>E: heartbeat_ack
+        E->>R: event / state.runtime（运行状态）
+    end
+    U->>W: HTTPS 播放请求
+    W->>W: 检查 Session、CSRF 与频道 Scope
+    W->>R: 转发允许的业务动作
+    R->>E: command（id、action、deadline、payload）
+    E-->>R: result（同一 id、结果或错误）
+    R-->>W: 返回执行结果
+    W-->>U: HTTP 响应
 ```
 
-## 快速启动
+Edge 在 WSS 端口池中保持一条活动连接。Cloud 的读缓存接收 Edge 发来的状态，写操作和搜索走实时请求。协议版本、动作白名单及每个动作的超时见 [relay_protocol.py](shared/relay_protocol.py)。
 
-### Windows
+## 点歌与小程序登录流程
 
-```powershell
-cd windows
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python create_env.py
-python run.py
+```mermaid
+flowchart TD
+    Input["用户选择服务器、语音频道和音乐"] --> WebOrBot{"操作入口"}
+    WebOrBot -->|控制台| Scope["校验登录、CSRF 和频道权限"]
+    WebOrBot -->|KOOK 指令| Allow["校验 Bot 指令白名单"]
+    Scope --> Queue["加入目标频道的播放队列"]
+    Allow --> Queue
+    Queue --> Resolve["从对应平台解析媒体"]
+    Resolve --> Stream["FFmpeg 解码并经 RTP 推送"]
+    Stream --> Next["播放结束后处理队列中的下一首"]
 ```
 
-Windows 优先使用 `windows/ffmpeg/bin` 中的 FFmpeg；不存在时再从 PATH 解析。
+小程序支持 KOOK 控制台账号密码登录。首次改密后，用户可主动绑定当前微信。下次选择微信免密登录时，小程序取得一次性码，由 Cloud 兑换微信身份并查找已关联的账号。会话与权限规则同样由 Cloud 应用。接口及错误码见 [Web API](docs/web-api.md)。
 
-### Ubuntu
-
-```bash
-cd Ubuntu
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-python3 create_env.py
-python3 run.py
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant M as 小程序
+    participant C as Cloud 鉴权
+    participant W as 微信
+    U->>M: 用 KOOK 密码登录并主动绑定
+    M->>W: wx.login
+    W-->>M: 一次性码
+    M->>C: Session + CSRF + 一次性码
+    C->>W: 服务端兑换身份
+    C->>C: 将身份摘要关联到当前 KOOK 用户
+    U->>M: 下次选择微信免密登录
+    M->>W: wx.login 获取新的一次性码
+    M->>C: POST 微信登录
+    C->>W: 服务端兑换身份
+    C-->>M: 已绑定且有效时签发 KOOK Session
 ```
 
-Ubuntu 默认从 PATH 解析 `ffmpeg` 和 `ffprobe`。
+## 找文件
 
-启动后访问 `http://127.0.0.1:18473/`。首次部署、systemd、反向代理、升级与验证步骤见 [部署指南](docs/deployment.md)。
-
-## 配置与数据
-
-每个平台目录都是独立部署单元：
-
-- `windows/.env` 或 `Ubuntu/.env`：Bot、Web、API、权限和 watchdog 配置。
-- `windows/Cookie/` 或 `Ubuntu/Cookie/`：三平台登录态。
-- 平台目录下的 `debug.log`、`netease_api_output.log`、`qq_api_output.log`：运行日志。
-
-凭据只保存在服务端，不写入全局 npm 包目录，也不应提交 Git。跨安装同步登录态时只复制 Cookie 目录中的凭据文件，具体清单见 [部署指南](docs/deployment.md#迁移已有实例)。
-
-## 项目目录
-
-```text
-.
-├─ windows/                 Windows 运行目录与随包 FFmpeg
-├─ Ubuntu/                  Ubuntu 运行目录
-├─ docs/                    架构、部署、接口和运维文档
-├─ scripts/                 平台一致性与秘密扫描脚本
-├─ Windows运行教程.md       Windows 最短部署入口
-└─ Ubuntu运行教程.md        Ubuntu 最短部署入口
-```
-
-Windows 与 Ubuntu 的共享 Python、模板、前端和测试文件应保持一致；平台差异只保留在媒体工具、系统服务和部署说明中。
-
-## 文档
-
-- [文档索引](docs/README.md)
-- [架构与运行机制](docs/architecture.md)
-- [完整部署流程](docs/deployment.md)
-- [运维与故障恢复](docs/operations.md)
-- [音乐平台与凭据](docs/music-platforms.md)
-- [Web 页面与 API](docs/web-api.md)
-- [开发与平台同步](docs/development.md)
-- [安全边界](docs/security.md)
-- [安全审计修复与加固基线](docs/security-hardening.md)
-
-## 安全
-
-默认按可信网络内自托管设计。建议本机部署时设置 `HOST=127.0.0.1`；需要远程访问时，应置于带认证和 TLS 的反向代理、VPN 或零信任访问层之后。不要直接向公网暴露 18474、18475 或未经认证的 18473 端口。
-
-发布前执行：
-
-```bash
-python scripts/check_secrets.py
-```
-
-## 许可证
-
-本项目使用 [MIT License](LICENSE)。
+[项目文件地图](docs/file-map.md)按任务定位入口、Web、Bot、播放核心、协议、小程序和测试。[文档索引](docs/README.md)汇总配置、运维和安全说明。项目采用 [MIT 许可证](LICENSE)。

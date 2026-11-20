@@ -52,6 +52,7 @@ def main() -> None:
         sys.path.insert(0, root_text)
 
     import run as platform_run
+    platform_run._configure_restart_entrypoint(EDGE_DIR / "run.py")
     from app import create_app
     from runtime_health import runtime_health
     from edge.agent import EdgeAgentSupervisor

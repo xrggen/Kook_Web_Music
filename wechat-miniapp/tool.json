@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "kook-console",
+  "name": "kook 机器人控制台",
+  "description": "独立登录，管理 kook 机器人的服务器、频道与运行状态",
+  "category": "utility",
+  "status": "available",
+  "route": "/kook/pages/console/console",
+  "icon": "kook-console",
+  "keywords": ["kook", "机器人", "频道", "播放", "队列", "控制台"],
+  "sortOrder": 14,
+  "packaging": "main",
+  "bundle": { "root": "kook", "pages": ["pages/console/console"] },
+  "iconSource": "assets/kook-console.png"
+}

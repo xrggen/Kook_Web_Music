@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlsplit
 
 
 WINDOWS_DIR = Path(__file__).resolve().parents[1]
@@ -109,6 +110,41 @@ class WatchdogEvaluatorTests(unittest.TestCase):
         self.assertEqual("healthy", decision.phase)
         self.assertFalse(decision.should_restart)
 
+    def test_music_api_failures_only_degrade_even_when_persistent(self):
+        self.clock.advance(181)
+        self.health.mark_loop_heartbeat()
+        self.health.mark_gateway_activity()
+        for failures in (
+            ("qq_music_api:http_unresponsive",),
+            ("netease_api:process_not_running",),
+            ("qq_music_api:process_not_running", "netease_api:http_unresponsive"),
+        ):
+            for _ in range(6):
+                decision = self.evaluator.evaluate(self.health.snapshot(), failures)
+                self.assertEqual("degraded", decision.phase)
+                self.assertEqual(failures, decision.reasons)
+                self.assertEqual(0, decision.consecutive_failures)
+                self.assertFalse(decision.should_restart)
+
+    def test_web_failure_still_restarts_without_inheriting_api_failures(self):
+        self.clock.advance(181)
+        self.health.mark_loop_heartbeat()
+        self.health.mark_gateway_activity()
+        api_failure = ("qq_music_api:http_unresponsive",)
+        for _ in range(6):
+            self.evaluator.evaluate(self.health.snapshot(), api_failure)
+        for count in (1, 2, 3):
+            decision = self.evaluator.evaluate(
+                self.health.snapshot(), (*api_failure, "web:http_unresponsive")
+            )
+            self.assertEqual(count, decision.consecutive_failures)
+            self.assertEqual(count == 3, decision.should_restart)
+
+        recovered = self.evaluator.evaluate(self.health.snapshot(), api_failure)
+        self.assertEqual("degraded", recovered.phase)
+        self.assertEqual(0, recovered.consecutive_failures)
+        self.assertFalse(recovered.should_restart)
+
 
 class WatchdogPathTests(unittest.TestCase):
     def tearDown(self):
@@ -133,6 +169,59 @@ class WatchdogPathTests(unittest.TestCase):
         )
         if run.NODE_EXECUTABLE is not None:
             self.assertTrue(os.path.isabs(run.NODE_EXECUTABLE))
+
+    def test_edge_restart_preserves_entrypoint_and_original_arguments(self):
+        edge_entrypoint = os.path.realpath(
+            os.path.join(run.PROJECT_ROOT, "edge", "run.py")
+        )
+        with (
+            mock.patch.object(run, "_restart_entrypoint", run.RUN_SCRIPT, create=True),
+            mock.patch.object(run, "_restart_arguments", None, create=True),
+            mock.patch.object(sys, "argv", [edge_entrypoint, "--example", "two words"]),
+        ):
+            run._configure_restart_entrypoint(edge_entrypoint)
+            with mock.patch.object(sys, "argv", [run.RUN_SCRIPT, "changed"]):
+                self.assertEqual(
+                    [run.PYTHON_EXECUTABLE, edge_entrypoint, "--example", "two words"],
+                    run._build_restart_command(),
+                )
+
+    def test_restart_entrypoint_rejects_other_scripts(self):
+        with (
+            mock.patch.object(run, "_restart_entrypoint", run.RUN_SCRIPT, create=True),
+            mock.patch.object(run, "_restart_arguments", None, create=True),
+        ):
+            with self.assertRaises(ValueError):
+                run._configure_restart_entrypoint(
+                    os.path.join(run.PROJECT_ROOT, "cloud", "run.py")
+                )
+            self.assertEqual(run.RUN_SCRIPT, run._build_restart_command()[1])
+
+    def test_edge_role_is_preserved_by_exec_and_fallback_restart(self):
+        edge_entrypoint = os.path.realpath(
+            os.path.join(run.PROJECT_ROOT, "edge", "run.py")
+        )
+        run._restart_in_progress.clear()
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(run, "_restart_entrypoint", run.RUN_SCRIPT, create=True),
+            mock.patch.object(run, "_restart_arguments", None, create=True),
+            mock.patch.object(sys, "argv", [edge_entrypoint]),
+            mock.patch.object(run, "_cleanup_playback_before_restart"),
+            mock.patch.object(run, "stop_music_api"),
+            mock.patch.object(run, "stop_qq_music_api"),
+            mock.patch.object(run.os, "chdir"),
+            mock.patch.object(run.os, "execve", side_effect=OSError("exec unavailable")) as execve,
+            mock.patch.object(run.subprocess, "Popen") as popen,
+            mock.patch.object(run.logging, "shutdown"),
+            mock.patch.object(run.os, "_exit"),
+        ):
+            run._configure_restart_entrypoint(edge_entrypoint)
+            run._perform_full_restart(("bot_loop:stale",))
+            command = [run.PYTHON_EXECUTABLE, edge_entrypoint]
+            self.assertEqual(command, execve.call_args.args[1])
+            self.assertEqual(command, popen.call_args.args[0])
+            self.assertEqual(run.APP_DIR, popen.call_args.kwargs["cwd"])
 
     def test_restart_budget_is_bounded_and_carried_in_environment(self):
         base = {
@@ -211,7 +300,8 @@ class WatchdogPathTests(unittest.TestCase):
                     method = "GET" if "GET" in methods else sorted(methods)[0]
                     with self.subTest(route=rule.rule, method=method):
                         response = client.open(rule.rule, method=method, json={})
-                        self.assertEqual(401, response.status_code)
+                        expected = 400 if rule.rule == "/api/auth/wechat/login" and method == "POST" else 401
+                        self.assertEqual(expected, response.status_code)
                         self.assertIn("no-store", response.headers.get("Cache-Control", ""))
 
     def test_dependency_repair_requires_two_consecutive_failures(self):
@@ -233,6 +323,83 @@ class WatchdogPathTests(unittest.TestCase):
             )
             stop.assert_called_once_with()
             start.assert_called_once_with()
+
+    def test_api_startup_probes_do_not_call_upstream_routes(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            (root / "dist").mkdir()
+            (root / "package.json").write_text("{}", encoding="utf-8")
+            (root / "dist" / "app.js").touch()
+            for starter in (run.start_music_api, run.start_qq_music_api):
+                process = mock.Mock()
+                process.poll.return_value = None
+                process.pid = 12345
+                with (
+                    mock.patch.object(run, "_music_api_process", None),
+                    mock.patch.object(run, "_qq_music_api_process", None),
+                    mock.patch.object(run, "_api_dir", return_value=tempdir),
+                    mock.patch.object(run, "_qq_api_dir", return_value=tempdir),
+                    mock.patch.object(run, "_system_node_environment", return_value={}),
+                    mock.patch.object(run, "_system_node_modules", return_value=tempdir),
+                    mock.patch.object(run, "_kill_port"),
+                    mock.patch.object(run, "_open_private_log"),
+                    mock.patch.object(run.subprocess, "Popen", return_value=process),
+                    mock.patch.object(run.time, "sleep"),
+                    mock.patch.object(run.requests, "get", return_value=mock.Mock(status_code=200)) as get,
+                ):
+                    starter()
+                    self.assertEqual(1, get.call_count)
+                    url = get.call_args.args[0]
+                    self.assertTrue(url.startswith("http://127.0.0.1:"))
+                    self.assertEqual("/", urlsplit(url).path)
+
+    def test_dependency_probes_use_local_static_pages(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+        with (
+            mock.patch.object(run, "_music_api_process", process),
+            mock.patch.object(run, "_qq_music_api_process", process),
+            mock.patch.object(run, "_api_dir", return_value=run.APP_DIR),
+            mock.patch.object(run, "_qq_api_dir", return_value=run.APP_DIR),
+            mock.patch.object(run.requests, "get", return_value=mock.Mock(status_code=200)) as get,
+        ):
+            self.assertEqual((), run._dependency_failures())
+        paths = [urlsplit(call.args[0]).path for call in get.call_args_list]
+        self.assertEqual(["/", "/", "/healthz"], paths)
+
+    def test_failed_api_repairs_never_clear_playback_or_restart_bot(self):
+        clock = FakeClock()
+        health = RuntimeHealth(clock)
+        health.mark_supervisor_ready()
+        clock.advance(181)
+        iterations = 0
+
+        def next_tick(_delay):
+            nonlocal iterations
+            iterations += 1
+            if iterations > 6:
+                raise InterruptedError("end watchdog test")
+            clock.advance(20)
+            health.mark_loop_heartbeat()
+            health.mark_gateway_activity()
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(run, "runtime_health", health),
+            mock.patch.object(run, "_dependency_failures", return_value=("qq_music_api:http_unresponsive",)),
+            mock.patch.object(run, "stop_qq_music_api") as stop,
+            mock.patch.object(run, "start_qq_music_api", side_effect=RuntimeError("still down")) as start,
+            mock.patch.object(run, "_cleanup_playback_before_restart") as cleanup,
+            mock.patch.object(run, "_perform_full_restart") as restart,
+            mock.patch.object(run.time, "sleep", side_effect=next_tick),
+            mock.patch.object(run.time, "monotonic", side_effect=clock),
+        ):
+            with self.assertRaises(InterruptedError):
+                run._watchdog_thread()
+        self.assertGreaterEqual(stop.call_count, 1)
+        self.assertGreaterEqual(start.call_count, 1)
+        restart.assert_not_called()
+        cleanup.assert_not_called()
 
     def test_exec_failure_falls_back_with_absolute_command_and_cwd(self):
         environment = {

@@ -40,6 +40,46 @@ POST / PUT / PATCH / DELETE
 
 ## 鉴权 API
 
+### 微信原生控制页兼容（kook-wechat-v1）
+
+复用原路由，不新增绕过鉴权的播放入口。`Content-Type: application/json`切换响应格式；旧HTML表单及其重定向保持兼容。
+
+| 请求 | JSON body | 成功响应 |
+| --- | --- | --- |
+| `POST /login` | `username`, `password`（字符串） | `success`, `clientProtocol`, `csrfToken`, `user`，并设置原Session/CSRF Cookies |
+| `POST /change-password` | `current_password`, `new_password`, `confirm_password` | 同上，轮换Session与CSRF，首次改密标识变为false |
+| `POST /logout` | `{}` | `success: true`，撤销当前Session并清除Cookies |
+
+`clientProtocol`固定`kook-wechat-v1`，`user`只包含`id/username/role/must_change_password`。Session Token不在JSON返回；CSRF Token只给当前客户端内存使用，不记日志。字段无效400、错误账号密码401、过多失败429；改密仍要求原密码、密码策略、Session及`X-CSRF-Token`。首次改密未完成时业务API仍428，Scope不足仍403。普通用户只允许注销自己的会话，不获得任何管理权限。
+
+小程序必须检查协议与Cookie，不把旧HTML登录页当JSON成功。客户端显式携带Cookie，写操作同时携带CSRF；不依赖浏览器Cookie自动管理，不对网络不确定的写操作自动重试。登录/改密/注销响应禁止缓存。
+
+### 微信关联接口
+
+| 请求 | 参数与授权 | 成功响应 |
+| --- | --- | --- |
+| `POST /api/auth/wechat/login` | JSON `{"code":"…"}`；用户主动调用 `wx.login` 后取得；无需现有 KOOK Session | `success`, `clientProtocol: "kook-wechat-v1"`, `csrfToken`, `user`；沿用 Session/CSRF Cookie |
+| `GET /api/auth/wechat/status` | 有效 KOOK Session；首次改密已完成 | `{"success":true,"bound":true}`，`bound` 表示当前 KOOK 账号是否有关联 |
+| `POST /api/auth/wechat/bind` | JSON `{"code":"…"}`；有效 KOOK Session、`X-CSRF-Token`，首次改密已完成 | `{"success":true,"bound":true}`；相同关联重复提交成功，不覆盖不同关联 |
+| `POST /api/auth/wechat/unbind` | JSON `{}`；有效 KOOK Session、`X-CSRF-Token`，首次改密已完成 | `{"success":true,"bound":false}`；未绑定时也返回成功 |
+
+错误响应包含 `success: false`、`code`、`error`、`auth_required`：
+
+| HTTP | `code` | 含义 |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` / `WECHAT_CODE_INVALID` | 请求格式错误 / 微信凭证无效或不可用 |
+| 401 | `AUTH_REQUIRED` / `WECHAT_NOT_LINKED` | 会话缺失或失效 / 当前微信没有可登录的关联账号 |
+| 403 | `CSRF_FAILED` | 关联写操作的 CSRF 校验失败 |
+| 409 | `WECHAT_BINDING_CONFLICT` | 当前 KOOK 账号已绑定另一微信，或此微信已绑定其他 KOOK 账号 |
+| 428 | `PASSWORD_CHANGE_REQUIRED` | 需要先使用密码登录并完成首次改密 |
+| 429 | `WECHAT_RATE_LIMITED` | 微信兑换限速 |
+| 502 | `WECHAT_UPSTREAM_ERROR` | 微信服务响应失败 |
+| 503 | `WECHAT_UNAVAILABLE` | 服务端未配置微信兑换 |
+
+这些接口的响应禁止缓存。登录凭证为一次性输入，重试由用户再次主动触发并获取新凭证。绑定和解绑不需要再次输入密码，也不签发、轮换或清除当前 Session/CSRF Cookie。解绑后，后续微信登录返回 `401 WECHAT_NOT_LINKED`；改密或管理员重置密码则同时解绑并撤销旧会话。普通退出只撤销当前会话。
+
+完整原生移动端复用下文音乐库、音乐账号、健康/日志和用户管理路由。播放/控制面登录仍检查`success:true`，音乐平台接口按其原有`code:200`检查，网易云手机号登录另兼容原网页的`code:803`，`/api/debug`按`status:success`检查；扫码检查使用各平台现有等待/已扫码/成功/过期状态。仅网易云`GET /api/account/status`另接受`{data:{code:200,account,profile}}`，内外层明确错误和非2xx HTTP均不可当成功；其他路由不接受内层code替代。`GET /api/account/detail`必须传入状态所给的数字`uid`查询参数。不得为兼容不同响应格式放宽所有接口的成功条件。日志只使用后端支持的`app`（`debug`为同一文件的兼容别名）。管理员调用均保持原Role与CSRF；普通用户只调用获允许的音乐库读取接口。
+
 - `GET /api/auth/session`：当前会话用户、角色和首次改密状态。
 - `GET /api/admin/users`：用户列表，Admin only。
 - `POST /api/admin/users`：创建用户，Admin only。

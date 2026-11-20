@@ -6,14 +6,14 @@ KOOK Web Music is a self-hosted Flask and KOOK Bot application for NetEase Cloud
 
 The repository has two deployable platform directories:
 
-- `windows/`: Windows runtime, including bundled FFmpeg.
+- `windows/`: Windows runtime, using local or system FFmpeg.
 - `Ubuntu/`: Ubuntu runtime, using system FFmpeg and an optional monitor page.
 
 Shared Python, templates, static assets, configuration templates, and tests must remain synchronized.
 
 ## Runtime
 
-`run.py` is the only application entry point. It loads the platform `.env`, resolves system Node.js 20+ and npm outside the repository, locates global npm packages through `npm root --global`, starts the two local music APIs, then starts Flask, the KOOK Bot, health tracking, and the watchdog.
+Use the platform `run.py` for standalone operation, `edge/run.py` for a connected playback host, or `cloud/run.py` for the public control plane. The platform launcher loads the platform `.env`, resolves system Node.js 20+ and npm outside the repository, locates global npm packages through `npm root --global`, starts the two local music APIs, then starts Flask, the KOOK Bot, health tracking, and the watchdog.
 
 Required global packages:
 
@@ -61,3 +61,7 @@ Run `python scripts/check_secrets.py` before publishing.
 ## Documentation
 
 The root README is the user entry point. `docs/architecture.md` and `docs/deployment.md` are the canonical architecture and deployment references. Platform guides contain only platform-specific steps. Documentation describes current behavior and does not maintain a duplicated changelog.
+
+## Release closeout
+
+Follow [the release workflow](docs/release-workflow.md), including its local cleanup stage where applicable. Use the [file map](docs/file-map.md) to locate implementation and tests.

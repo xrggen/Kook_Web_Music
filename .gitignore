@@ -78,3 +78,8 @@ Thumbs.db
 
 # Bilibili API (if local copy)
 bilibili-api/
+
+# Local WeChat Developer Tools configuration and private app settings
+**/project.private.config.json
+**/AppSecret.txt
+**/AppID.txt
